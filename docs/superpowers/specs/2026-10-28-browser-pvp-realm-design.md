@@ -1,6 +1,6 @@
 # Browser Classic PvP realm and Solana currency
 
-Status: proposed design, awaiting user approval. No MMO server or token bridge has been deployed by this document.
+Status: approved by the user on 2026-10-28: proceed and fill implementation blanks. Deployment verification is tracked separately; this document alone does not establish a running realm.
 
 ## Intent and confirmed requirements
 
