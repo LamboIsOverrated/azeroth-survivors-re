@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 const module = await import('../server.mjs').catch(() => ({}));
@@ -23,11 +24,11 @@ test('integer token amounts preserve precision and reject rounded or ambiguous i
   }
 });
 
-async function fixture(t, { launched = false, env = {}, upstream, gameUrl, clock } = {}) {
+async function fixture(t, { launched = false, env = {}, upstream, gameUrl, gameStatus, clock } = {}) {
   assert.equal(typeof module.createGateway, 'function');
   const server = module.createGateway({ env: { GAME_ACCESS_CODE: 'test-preview-access-code', GAME_TOKEN_MINT: mint,
     GAME_TOKEN_DECIMALS: '6', TOKEN_LAUNCHED: String(launched), SWAPS_ENABLED: String(launched), ...env },
-    fetchImpl: upstream || (() => { throw new Error('unexpected upstream request'); }), gameUrl, now: clock });
+    fetchImpl: upstream || (() => { throw new Error('unexpected upstream request'); }), gameUrl, gameStatus, now: clock });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -67,6 +68,19 @@ test('prelaunch or missing mint cannot request or execute swaps', async (t) => {
   const missing = await fixture(t, { launched: true, env: { GAME_TOKEN_MINT: '' } });
   assert.equal((await missing.request('/api/config')).status, 200);
   assert.equal((await missing.request('/api/swap/order', {})).status, 503);
+});
+
+test('proxy refuses protocol-relative request paths instead of connecting to another host', async (t) => {
+  const { base, cookie } = await fixture(t, { gameUrl: 'http://127.0.0.1:1', gameStatus: () => ({ state: 'ready' }) });
+  const response = await fetch(`${base}//127.0.0.1:1/private`, { headers: { cookie } });
+  assert.equal(response.status, 400);
+  const absoluteStatus = await new Promise((resolve, reject) => {
+    const req = httpRequest(base, { path: 'http://127.0.0.1:1/private', headers: { cookie } }, response => {
+      response.resume(); resolve(response.statusCode);
+    });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(absoluteStatus, 400);
 });
 
 test('swaps reject arbitrary token pairs, malformed amounts and cross-origin posts before calling Jupiter', async (t) => {

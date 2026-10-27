@@ -1,0 +1,21 @@
+name: gateway
+on:
+  pull_request:
+    paths: ['deploy/**', 'web/**', '.github/workflows/gateway.yml']
+  push:
+    branches: [main, feat/railway-solana]
+    paths: ['deploy/**', 'web/**', '.github/workflows/gateway.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: deploy/package-lock.json
+      - run: npm ci && npm run build && npm test && npm audit --omit=dev
+        working-directory: deploy

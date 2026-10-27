@@ -72,7 +72,10 @@ export function createGateway({ env = process.env, fetchImpl = fetch, gameUrl, n
 
   function proxy(req, res, path) {
     if (!gameUrl || gameStatus().state !== 'ready') return json(res, 503, { error: gameStatus().message });
-    const dest = new URL(path, gameUrl);
+    const dest = new URL(gameUrl);
+    const localPath = new URL(path, 'http://gateway');
+    dest.pathname = localPath.pathname;
+    dest.search = localPath.search;
     const forwarded = proxyRequest(dest, { method: req.method, headers: { 'accept-encoding': req.headers['accept-encoding'] || 'identity' } }, upstreamRes => {
       const headers = { ...upstreamRes.headers, 'cache-control': 'private, no-cache' };
       delete headers['transfer-encoding']; delete headers.connection;
@@ -90,6 +93,7 @@ export function createGateway({ env = process.env, fetchImpl = fetch, gameUrl, n
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-frame-options', 'DENY');
     try {
+      if (!req.url?.startsWith('/') || req.url.startsWith('//') || req.url.includes('\\')) throw fail(400, 'Invalid request path.');
       const url = new URL(req.url, 'http://gateway');
       const path = url.pathname;
       if (path === '/healthz' && req.method === 'GET') return json(res, 200, { status: 'ok', game: gameStatus().state, swapsEnabled: config.swapsEnabled });
