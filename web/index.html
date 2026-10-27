@@ -59,6 +59,10 @@
   }
 </script>
 <canvas id="benilla"></canvas>
+<script type="module">
+  // Optional deployment wallet; the local game remains usable without the gateway bundle.
+  import('/wallet.bundle.js').catch(() => {});
+</script>
 <script>
   // Dev page: allow `?user=&pass=&char=` links to log in. A hosting page that fetched the
   // credentials itself sets `window.__wenilla_env = {user, pass, host}` here instead, and the
