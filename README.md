@@ -32,6 +32,12 @@ minutes. **No server, no login, no account** — fully offline and self-containe
   </tr>
 </table>
 
+### This fork's Railway preview
+
+This fork adds a private Railway deployment and a Solana wallet panel. SOL/game-token exchange
+stays disabled until the token launches. See [deployment and token setup](docs/RAILWAY.md).
+Wallet changes reuse a checksum-pinned engine; Rust or game-client changes require a new engine release.
+
 ### In this build
 
 - **A character-create pick screen** built from the client's own glue art: eight races, both

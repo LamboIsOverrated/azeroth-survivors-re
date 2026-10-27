@@ -1,0 +1,15 @@
+.git
+.env*
+**/node_modules
+**/.env*
+target
+web/dist
+deploy/public/wallet.bundle.js
+wow-data
+WoW
+extracted
+out
+benilla-config
+tools
+.probe-identity
+*.log

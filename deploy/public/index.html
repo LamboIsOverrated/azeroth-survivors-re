@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Azeroth Survivors · Private preview</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="preview-page">
+  <main class="preview-shell">
+    <p class="eyebrow">PRIVATE PREVIEW · SOLANA</p>
+    <h1>Azeroth<br><span>Survivors</span></h1>
+    <p class="intro">Enter the world. Survive the swarm.</p>
+    <form id="preview-login" class="preview-card">
+      <label for="preview-code">Preview access code</label>
+      <div class="input-row"><input id="preview-code" type="password" autocomplete="current-password" required><button>Enter preview</button></div>
+      <p id="login-message" role="status">This early build is available by invitation.</p>
+    </form>
+    <section id="preview-content" hidden>
+      <div class="preview-card game-card">
+        <div><p class="eyebrow">THE BATTLEGROUND</p><h2>Your next run awaits.</h2><p id="game-status" role="status">Checking the game…</p></div>
+        <a id="play-link" class="button" href="/game" hidden>Enter world ↗</a>
+        <p class="muted">Requires a desktop browser with WebGPU.</p>
+      </div>
+      <div id="wallet-app"></div>
+    </section>
+    <footer>Fan-made game by Aethus. Engine based on benilla / wenilla. Unaffiliated with Blizzard Entertainment.<br>Preview access does not grant rights to distribute game data.</footer>
+  </main>
+  <script type="module" src="/wallet.bundle.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# Rebuild only when Rust, vendored code, or the game's web client changes.
+# Export with: docker buildx build --platform linux/amd64 -f Dockerfile.engine --output type=local,dest=engine-output .
+# Package engine-output's web/ and bin/ directories, publish a versioned release, and update
+# the root Dockerfile's URL and checksum together. No game data belongs in this artifact.
+FROM rust:1.98.1-bookworm AS game
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl xz-utils clang cmake pkg-config python3 brotli libasound2-dev libudev-dev \
+    libwayland-dev libxkbcommon-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /source
+COPY . .
+ENV CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_DEBUG=0
+RUN scripts/web-setup.sh
+RUN scripts/web-build.sh
+RUN cargo build --locked --release -p wenilla-host
+
+FROM scratch
+COPY --from=game /source/web/dist /web/dist
+COPY --from=game /source/target/release/wenilla-host /bin/wenilla-host

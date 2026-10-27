@@ -52,3 +52,9 @@ __pycache__/
 # The C sysroot for the wasm Lua build — fetched by scripts/web-setup.sh, ~300 MB
 /tools/wasi-sdk/
 /tools/binaryen/
+
+# Deployment credentials, dependencies, and generated wallet bundle.
+.env
+.env.*
+**/node_modules/
+/deploy/public/wallet.bundle.js
