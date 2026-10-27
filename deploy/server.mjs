@@ -76,8 +76,14 @@ export function createGateway({ env = process.env, fetchImpl = fetch, gameUrl, n
     const localPath = new URL(path, 'http://gateway');
     dest.pathname = localPath.pathname;
     dest.search = localPath.search;
-    const forwarded = proxyRequest(dest, { method: req.method, headers: { 'accept-encoding': req.headers['accept-encoding'] || 'identity' } }, upstreamRes => {
-      const headers = { ...upstreamRes.headers, 'cache-control': 'private, no-cache' };
+    const validators = {};
+    for (const name of ['if-none-match', 'if-modified-since']) if (req.headers[name]) validators[name] = req.headers[name];
+    const forwarded = proxyRequest(dest, { method: req.method, headers: { 'accept-encoding': req.headers['accept-encoding'] || 'identity', ...validators } }, upstreamRes => {
+      // The startup prefetch must warm the browser cache for the engine's later sync XHRs.
+      // Keep immutable data private without forcing hundreds of network revalidations.
+      const cache = localPath.pathname.startsWith('/data/') && upstreamRes.statusCode === 200
+        ? 'private, max-age=31536000, immutable' : 'private, no-cache';
+      const headers = { ...upstreamRes.headers, 'cache-control': cache };
       delete headers['transfer-encoding']; delete headers.connection;
       res.writeHead(upstreamRes.statusCode, headers);
       pipeline(upstreamRes, res, () => {});

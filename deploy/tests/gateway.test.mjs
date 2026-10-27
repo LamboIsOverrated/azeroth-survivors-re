@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { request as httpRequest } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 
 const module = await import('../server.mjs').catch(() => ({}));
@@ -81,6 +81,28 @@ test('proxy refuses protocol-relative request paths instead of connecting to ano
     req.on('error', reject); req.end();
   });
   assert.equal(absoluteStatus, 400);
+});
+
+test('private game data keeps its warm-cache lifetime and unchanged bundles can revalidate', async (t) => {
+  const native = createServer((req, res) => {
+    if (req.url.startsWith('/data/')) {
+      res.writeHead(200, { 'cache-control': 'public, max-age=31536000, immutable' });
+      return res.end('asset');
+    }
+    if (req.headers['if-none-match'] === '"engine-version"') { res.writeHead(304); return res.end(); }
+    res.writeHead(200, { etag: '"engine-version"', 'cache-control': 'no-cache' }); res.end('bundle');
+  });
+  native.listen(0, '127.0.0.1'); await once(native, 'listening');
+  t.after(() => { native.closeAllConnections(); native.close(); });
+  const { request } = await fixture(t, { gameUrl: `http://127.0.0.1:${native.address().port}`, gameStatus: () => ({ state: 'ready' }) });
+  const data = await request('/data/test.dbc');
+  assert.equal(data.status, 200);
+  assert.equal(await data.text(), 'asset');
+  assert.match(data.headers.get('cache-control'), /private/);
+  assert.match(data.headers.get('cache-control'), /max-age=31536000/);
+  assert.doesNotMatch(data.headers.get('cache-control'), /public|no-cache/);
+  const cached = await request('/wenilla.js', undefined, { 'if-none-match': '"engine-version"' });
+  assert.equal(cached.status, 304);
 });
 
 test('swaps reject arbitrary token pairs, malformed amounts and cross-origin posts before calling Jupiter', async (t) => {

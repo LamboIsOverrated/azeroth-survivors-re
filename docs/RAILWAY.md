@@ -1,10 +1,10 @@
 # Railway private preview
 
-The root Dockerfile builds the existing WASM client, the existing native MPQ data host, and a Node gateway with a Solana wallet panel. It does not embed game data or keys. The native host binds to loopback and the gateway authenticates every game/data request. `/ws/*` is never forwarded. The supplied fan game's runtime data and its source-code licenses are separate; keep this preview restricted to authorized participants.
+The root Dockerfile assembles a checksum-pinned engine release and a Node gateway with a Solana wallet panel. It does not embed game data or keys. The native host binds to loopback and the gateway authenticates every game/data request. `/ws/*` is never forwarded. The supplied fan game's runtime data and its source-code licenses are separate; keep this preview restricted to authorized participants.
 
 ## Service configuration
 
-Deploy the repository using its Dockerfile. Attach a volume at `/game-data` with sufficient capacity for both the source archive and extracted MPQs (20 GB recommended for initialization). The build is substantial: Rust/Bevy plus the WASM toolchain may take tens of minutes on a cold builder.
+Deploy the repository using its Dockerfile. Attach a volume at `/game-data` with sufficient capacity for both the source archive and extracted MPQs (20 GB recommended for initialization). Wallet changes reuse the existing compiled engine, so they do not repeat a cold Rust/Bevy build.
 
 - `GAME_ACCESS_CODE`: required, at least 12 characters. Share privately. Changing it invalidates preview sessions.
 - `DOWNLOAD_GAME_DATA=true`: opt in to the repository's existing first-run data download. Otherwise supply the user's `Data/` directory under `/game-data/Data` using Railway volume tooling.
@@ -33,3 +33,9 @@ Game-token balances are confirmed chain balances. XP/health are run statistics. 
 From `deploy/`, run `npm ci`, `npm run build`, and `npm test`. `npm start` starts the gateway; without data it shows the waiting state. The default local port is 3000. Production uses Railway's `PORT`. Keep credentials in environment variables, never the repository.
 
 The unmodified Rust renderer needs its normal build gates and real game data for a full play test. The deployment tests cover gateway authentication, blocked data/relay access, launch gating, amount precision, wallet/order binding, modified transactions, expiry, replay, and external-service failures.
+
+## Engine releases and caching
+
+The root Dockerfile pins the engine built from commit `0f16c582f2dd5333df1d922f67c52c15a8428989`. A change under `crates/`, `third_party/`, or the game's `web/` files requires a fresh engine release; changing those sources alone does not change the pinned production binary. Use `Dockerfile.engine` to export a Linux amd64 build, archive its `web/` and `bin/` directories, publish it alongside the source licenses, and update `ENGINE_BUNDLE_URL` and `ENGINE_BUNDLE_SHA256` together. Retain old versioned artifacts for rollback. `deploy/` wallet changes are rebuilt on every normal deployment.
+
+Authenticated game data keeps `private, max-age=31536000, immutable` so the existing startup prefetch warms the browser's later synchronous reads. Static game bundles use private revalidation with forwarded ETag/date validators. Shared caches must never cache preview data. Players who already downloaded an asset retain their own local copy; logout cannot revoke bytes already delivered.

@@ -26,16 +26,16 @@ function startHost() {
       if (response.ok) { state = { state: 'ready', message: 'The battleground is ready.' }; clearInterval(interval); }
     } catch { /* The host opens its patch chain before listening. */ }
   }, 1000);
-  child.on('error', error => { console.error('Game host could not start:', error.message); clearInterval(interval); state = { state: 'error', message: 'The game could not start. The deployment logs have details.' }; });
-  child.on('exit', code => { clearInterval(interval); if (!stopped) { console.error(`Game host exited: ${code}`); state = { state: 'error', message: 'The game stopped. The deployment logs have details.' }; } });
+  child.on('error', error => { console.error('Game host could not start:', error.message); clearInterval(interval); state = { state: 'error', message: 'The game could not start. Please try again later.' }; });
+  child.on('exit', code => { clearInterval(interval); if (!stopped) { console.error(`Game host exited: ${code}`); state = { state: 'error', message: 'The game stopped. Please try again later.' }; } });
 }
 
 if (existsSync(resolve(data, 'terrain.MPQ')) && existsSync(resolve(data, 'patch.MPQ'))) startHost();
 else if (process.env.DOWNLOAD_GAME_DATA === 'true') {
   state = { state: 'downloading', message: 'Preparing the game data for its first run. This can take several minutes; you can leave this page open.' };
   child = spawn('bash', [resolve(root, 'scripts/fetch-data.sh')], { env: { ...process.env, WOW_DATA_DIR: dataRoot }, stdio: 'inherit' });
-  child.on('error', error => { console.error('Game data initialization failed:', error.message); state = { state: 'error', message: 'The game data could not be prepared. The deployment logs have details.' }; });
-  child.on('exit', code => { if (code === 0) startHost(); else if (!stopped) state = { state: 'error', message: 'The game data download did not finish. The deployment logs have details.' }; });
+  child.on('error', error => { console.error('Game data initialization failed:', error.message); state = { state: 'error', message: 'The game data could not be prepared. Please try again later.' }; });
+  child.on('exit', code => { if (code === 0) startHost(); else if (!stopped) state = { state: 'error', message: 'The game data download did not finish. Please try again later.' }; });
 }
 
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { stopped = true; child?.kill('SIGTERM'); gateway.close(); setTimeout(() => process.exit(0), 5000).unref(); });
