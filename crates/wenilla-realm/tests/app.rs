@@ -453,6 +453,7 @@ async fn admin_creates_player_who_can_fetch_hidden_game_credentials() {
     assert_eq!(v["pass"].as_str().unwrap().len(), 16);
     assert_eq!(v["host"], "localhost");
     assert_eq!(v["realm"], "Test Realm");
+    assert_eq!(v["transport_profile"], "reference");
     assert!(v.get("dev_query_creds").is_none());
     assert_eq!(r.headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
 

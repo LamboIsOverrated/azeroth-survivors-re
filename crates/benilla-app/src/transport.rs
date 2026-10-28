@@ -324,7 +324,24 @@ fn arm_transports(
             .or_insert_with(|| {
                 let t = nodes.path(mo.taxi_path_id).and_then(|path| {
                     // The build pins its period to the reference's own bookkeeping (`0x5f4cc0`).
+                    #[cfg(not(target_arch = "wasm32"))]
                     let t = TransportTimetable::build(path, mo.move_speed, mo.accel_rate)?;
+                    // Explicit host-selected compatibility for the pinned CMaNGOS realm;
+                    // native clients and other browser realms keep the reference profile.
+                    #[cfg(target_arch = "wasm32")]
+                    let t = match crate::webenv::var("WOW_TRANSPORT_PROFILE").as_deref() {
+                        None | Some("reference") => {
+                            TransportTimetable::build(path, mo.move_speed, mo.accel_rate)
+                        }
+                        Some("cmangos-classic-4d230bb1") => {
+                            TransportTimetable::build_cmangos_4d230bb1(
+                                path,
+                                mo.move_speed,
+                                mo.accel_rate,
+                            )
+                        }
+                        Some(_) => None,
+                    }?;
                     info!(
                         "transport: path {} timetable built — period {} ms",
                         mo.taxi_path_id, t.period_ms

@@ -71,6 +71,7 @@ async fn play(session: Session, State(state): State<Arc<AppState>>) -> Result<Re
         "pass": pass,
         "host": state.cfg.public_host(),
         "realm": state.realm_name().await,
+        "transport_profile": state.cfg.transport_profile,
     });
     // A dungeon-preset character: the client skips the login and character screens into it.
     if let Some(name) = crate::presets::character_of(&state.db, session.user.id).await? {

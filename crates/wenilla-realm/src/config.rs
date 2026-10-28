@@ -36,6 +36,9 @@ pub struct Config {
     pub cookie_insecure: bool,
     /// Core config is generated in another service; disable file controls and shared presets.
     pub remote_config: bool,
+    /// Browser boat compatibility. Default reference behavior is unchanged;
+    /// cmangos-classic-4d230bb1 requires the explicitly pinned companion world.
+    pub transport_profile: String,
 }
 
 fn env_or(name: &str, default: &str) -> String {
@@ -75,6 +78,12 @@ impl Config {
             dev_query_creds: env_or("WENILLA_DEV_QUERY_CREDS", "0") == "1",
             cookie_insecure: env_or("REALM_COOKIE_INSECURE", "0") == "1",
             remote_config: env_or("REALM_REMOTE_CONFIG", "0") == "1",
+            transport_profile: crate::transport_profile::validated(&env_or(
+                "REALM_TRANSPORT_PROFILE",
+                "reference",
+            ))
+            .context("REALM_TRANSPORT_PROFILE is not a supported compatibility profile")?
+            .into(),
         })
     }
 

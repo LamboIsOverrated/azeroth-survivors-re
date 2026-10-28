@@ -12,6 +12,9 @@ use std::f32::consts::PI;
 
 use crate::taxi::TaxiPathNode;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod cmangos;
+
 /// A transport's position and heading at one instant of its cycle, in WoW coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransportSample {

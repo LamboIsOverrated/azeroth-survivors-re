@@ -21,6 +21,7 @@ pub mod session;
 pub mod soap;
 pub mod sysinfo;
 pub mod templates;
+mod transport_profile;
 pub mod web;
 pub mod ws;
 
