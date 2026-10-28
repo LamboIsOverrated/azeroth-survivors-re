@@ -269,6 +269,9 @@ class RuntimeTests(unittest.TestCase):
 
     def test_schema_sql_does_not_elevate_normal_accounts(self):
         sql = runtime.security_sql(runtime.settings(self.env()))
+        self.assertEqual(sql.count('GRANT DROP'), 1)
+        self.assertIn("GRANT DROP ON classiccharacters.game_event_status TO 'mangos'@'%';", sql)
+        self.assertNotIn('GRANT ALL', sql)
         self.assertEqual(sql.count("'Azeroth TEST PvP'"), 2)
         self.assertIn('gmlevel=3', sql)
         self.assertIn("WHERE username='REALMOPS'", sql)
@@ -294,7 +297,38 @@ class RuntimeTests(unittest.TestCase):
             (root / 'extraction/complete.json').write_text('{"core":"wrong"}')
             self.assertFalse(runtime.extraction_ready(root))
             (root / 'extraction/complete.json').write_text('{"core":"' + runtime.CORE + '"}')
-            self.assertTrue(runtime.extraction_ready(root))
+            self.assertFalse(runtime.extraction_ready(root), 'legacy canaries cannot attest complete world data')
+
+    def test_existing_complete_marker_never_blesses_corrupt_skipped_extraction(self):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                data = root / 'data'
+                for name in ('dbc/Map.dbc', 'maps/000.map', 'vmaps/model.vmo', 'mmaps/000.mmap'):
+                    path = data / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'accepted')
+                inventory = runtime.world_inventory
+                profile = {'version': 1, 'core': runtime.CORE, 'inputs': [], 'tools': {},
+                           'outputs': inventory.summary(inventory.scan_outputs(data))}
+                (root / 'extraction').mkdir()
+                marker = root / 'extraction/complete.json'
+                legacy = '{"core":"' + runtime.CORE + '"}'
+                marker.write_text(legacy)
+                if corrupt:
+                    (data / 'vmaps/model.vmo').write_bytes(b'corrupt!')
+                with patch.object(inventory, 'load_profile', return_value=profile), \
+                        patch.object(inventory, 'verify_sources') as sources, \
+                        patch.object(runtime, 'run_child') as run:
+                    if corrupt:
+                        with self.assertRaisesRegex(RuntimeError, 'inventory'):
+                            runtime.extract({}, root)
+                        self.assertEqual(marker.read_text(), legacy)
+                    else:
+                        runtime.extract({}, root)
+                        inventory.verify_outputs(data, marker, profile)
+                    sources.assert_called_once()
+                    run.assert_not_called()
 
     def test_game_child_has_no_operator_secrets_and_drops_privileges(self):
         options = runtime.game_options(self.env(PATH='/usr/bin', LANG='C.UTF-8'))

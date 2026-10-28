@@ -10,8 +10,9 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/cmangos/mangos
     && git -C mangos-classic checkout --detach de8f72993b9e1faa1bf92dd5505f3daec5cea3ce \
     && git -C mangos-classic submodule update --init --recursive
 COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json /opt/bridge/core/
-COPY deploy/realm/bridge/tools/apply-patch.mjs /opt/bridge/tools/apply-patch.mjs
-RUN node /opt/bridge/tools/apply-patch.mjs /opt/src/mangos-classic --apply
+COPY deploy/realm/bridge/tools/apply-patch.mjs deploy/realm/bridge/tools/check_realmd_cli.py /opt/bridge/tools/
+RUN node /opt/bridge/tools/apply-patch.mjs /opt/src/mangos-classic --apply \
+    && python3 /opt/bridge/tools/check_realmd_cli.py /opt/src/mangos-classic
 COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/anticheat/
 RUN python3 /opt/anticheat/apply_anticheat.py /opt/src/mangos-classic --apply \
     && g++ -std=c++17 -Wall -Wextra -Werror /opt/anticheat/movement_budget_test.cpp -o /tmp/movement-budget-test \
@@ -32,12 +33,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 curl un
 # Keep the pinned base's extractors, extraction resources, SQL and Classic DB.
 # Only these two game binaries are replaced; extractor file formats stay pinned.
 COPY --from=build /opt/mangos/bin/mangosd /opt/mangos/bin/realmd /opt/mangos/bin/
-COPY deploy/realm/core/runtime.py deploy/realm/core/smoke_runtime.py deploy/realm/core/adt_repair.py deploy/realm/core/repair_client.py /opt/railway-core/
+COPY deploy/realm/core/runtime.py deploy/realm/core/smoke_runtime.py deploy/realm/core/adt_repair.py deploy/realm/core/repair_client.py deploy/realm/core/world_inventory.py deploy/realm/core/extraction-profile.json /opt/railway-core/
 COPY deploy/realm/core/upstreams.env deploy/realm/core/PROVENANCE.md /opt/railway-core/
 # Corresponding patched GPL source and build instructions accompany the binaries.
 COPY --from=build /tmp/cmangos-bridge-source.tar.gz /opt/railway-core/source/cmangos-bridge-source.tar.gz
 COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json deploy/realm/bridge/core/001-world-bridge.sql deploy/realm/bridge/core/002-missing-character-reason.sql /opt/railway-core/source/bridge/core/
-COPY deploy/realm/bridge/tools/apply-patch.mjs /opt/railway-core/source/bridge/tools/
+COPY deploy/realm/bridge/tools/apply-patch.mjs deploy/realm/bridge/tools/check_realmd_cli.py /opt/railway-core/source/bridge/tools/
 COPY deploy/realm/core/Dockerfile.bridge /opt/railway-core/source/Dockerfile.bridge
 COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/railway-core/source/anticheat/
 ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 REALM_BRIDGE_TEST_ENABLE=0 CORE_BROWSER_MOVEMENT_COMPILED=1 REALM_BROWSER_MOVEMENT_ENABLE=0

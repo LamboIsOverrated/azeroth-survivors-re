@@ -134,3 +134,33 @@ air origins without resetting their time. Source tests compile the actual reset,
 teleport, expiry and speed-ack methods, while standalone models cover withheld
 landing, timer wrap, trajectory forgery and world/local air-frame changes. Full
 image and isolated actual-world acceptance remain separate prerequisites.
+# Complete generated-data attestation
+
+`extraction-profile.json` contains metadata only. Its Linux amd64 extractor
+profile pins all fourteen active input archives, the four extractor binaries,
+the unchanged upstream extraction configuration, and the off-mesh input. The
+accepted output is every regular file under `dbc`, `maps`, `vmaps`, and `mmaps`,
+including `.vmo`, `.m2`, and extensionless files: 10,273 files / 2,322,924,825
+bytes. The SHA256 of sorted compact JSON `[relative POSIX path, size, SHA256]`
+vectors is `b3f32d33c91ce23c05fc1efeb021bc78c8bf7f68f765b159dda754ae59d02e15`.
+
+The independently copied restore matched every file, then loaded the saved
+character and quest in the browser. The new verifier separately checked the
+complete source and generated trees on the running realm in read-only mode;
+profile SHA256 `225b6b4fffd7ca3230b8f7379a47fd34b107213833c953d97eeeb7fd7e24837f`.
+That check did not write or upgrade the running realm's legacy marker.
+
+Startup verifies all bytes before launching game processes. A legacy marker
+can be sealed only when sources, tools and the complete output root match the
+accepted profile. Missing files, same-size corruption, extra files, changed
+extractors and unknown sources keep the realm closed for repair. Unchanged
+archives may link only to their exact immutable original names; the repaired
+`patch-2.MPQ` may link to its exact private overlay. All linked bytes are hashed.
+
+The active first extraction used the manually derived `patch-2.MPQ` (9,597,162
+bytes, SHA256 `0991580c474caf7e70e187447829ce1deec8e65ea8654d9a275050b6934665ca`).
+Preserve that exact private overlay with the immutable original archives for
+recovery. The later normalized helper emits different archive metadata; do
+not substitute it into this accepted extraction profile without separately
+checking the complete resulting output tree and reviewing its profile.
+

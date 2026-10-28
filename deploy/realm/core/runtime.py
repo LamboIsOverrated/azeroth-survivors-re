@@ -14,6 +14,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import world_inventory
+
 SCHEMAS = ('classicrealmd', 'classiccharacters', 'classicmangos', 'classiclogs')
 CORE = 'de8f72993b9e1faa1bf92dd5505f3daec5cea3ce'
 STATE = dict(phase='starting', maintenance=False, database=False, data=False,
@@ -132,10 +134,13 @@ def data_ready(data):
 
 
 def extraction_ready(root):
+    if not (root / 'extraction/complete.json').is_file():
+        return False
     try:
-        marker = json.loads((root / 'extraction/complete.json').read_text())
-        return marker.get('core') == CORE and data_ready(root / 'data')
-    except (OSError, ValueError):
+        STATE['phase'] = 'verifying-complete-world-data'
+        world_inventory.verify(root, expected_core=CORE)
+        return True
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
         return False
 
 
@@ -169,6 +174,9 @@ REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mangos'@'%';
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'realmweb'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE ON classicrealmd.* TO 'mangos'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE ON classiccharacters.* TO 'mangos'@'%';
+-- The pinned GameEventMgr startup uses TRUNCATE for this bookkeeping table.
+-- Keep DROP scoped to that table; no other runtime DDL is authorized.
+GRANT DROP ON classiccharacters.game_event_status TO 'mangos'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE,CREATE TEMPORARY TABLES ON classicmangos.* TO 'mangos'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE ON classiclogs.* TO 'mangos'@'%';
 GRANT SELECT ON classicrealmd.* TO 'realmweb'@'%';
@@ -255,22 +263,31 @@ def run_child(command, **kwargs):
 
 def extract(cfg, root):
     data, client = root / 'data', root / 'client'
-    files = sorted(p for p in (client / 'Data').rglob('*') if p.is_file() and p.suffix.lower() == '.mpq')
-    if not files:
-        raise RuntimeError('operator input missing: /realm-data/client/Data/*.MPQ')
-    data.mkdir(parents=True, exist_ok=True)
-    manifest = json.dumps([(str(p.relative_to(client)), p.stat().st_size, p.stat().st_mtime_ns) for p in files])
-    fingerprint = hashlib.sha256((CORE + manifest).encode()).hexdigest()
+    tools = Path('/opt/mangos/bin/tools')
+    config = Path('/opt/src/mangos-classic/contrib/extractor_scripts/config.json')
+    profile = world_inventory.load_profile()
+    if profile['core'] != CORE:
+        raise RuntimeError('extraction profile does not match the pinned core')
+    world_inventory.verify_sources(client, tools, config, profile)
     stages = root / 'extraction'
     stages.mkdir(exist_ok=True)
-    tools = Path('/opt/mangos/bin/tools')
+    if (stages / 'complete.json').exists():
+        # A legacy or damaged marker is upgraded only when every source/tool and
+        # output byte equals the independently accepted extraction. Never bless
+        # partial outputs merely because old stage markers or canaries exist.
+        world_inventory.seal_outputs(data, stages / 'complete.json', profile)
+        STATE['data'] = True
+        STATE['phase'] = 'extraction-verified'
+        return
+    data.mkdir(parents=True, exist_ok=True)
+    fingerprint = world_inventory.profile_id(profile)
     plan = [('dbc-maps', [str(tools / 'ad'), '-i', str(client), '-o', str(data)]),
             ('vmap-extract', [str(tools / 'vmap_extractor'), '-d', str(client / 'Data'), '-o', str(data)]),
             ('vmap-assemble', [str(tools / 'vmap_assembler'), str(data / 'Buildings'), str(data / 'vmaps')]),
             ('mmaps', [str(tools / 'MoveMapGen'), '--silent', '--configInputPath', str(tools / 'config.json'),
                        '--offMeshInput', str(tools / 'offmesh.txt'), '--workdir', str(data) + '/',
                        '--threads', cfg['EXTRACT_THREADS'], '--buildGameObjects'])]
-    shutil.copyfile('/opt/src/mangos-classic/contrib/extractor_scripts/config.json', tools / 'config.json')
+    shutil.copyfile(config, tools / 'config.json')
     for name, command in plan:
         if STOP.is_set():
             return
@@ -286,7 +303,7 @@ def extract(cfg, root):
         write_private(marker, fingerprint)
     if not data_ready(data):
         raise RuntimeError('extractors exited but required data outputs missing')
-    write_private(stages / 'complete.json', json.dumps({'core': CORE, 'input': fingerprint}))
+    world_inventory.seal_outputs(data, stages / 'complete.json', profile)
     STATE['data'] = True
     STATE['phase'] = 'extraction-complete'
 
