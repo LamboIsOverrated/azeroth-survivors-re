@@ -236,6 +236,9 @@ patched dispatch/character-enumeration/Warden-packet and authoritative reset,
 teleport, expiry and speed-ack methods with narrow engine boundary fakes. It checks
 validator order, refusal short-circuiting, post-teleport rejection, midair reset and Warden
 absence/presence; it fails against the original pinned movement dispatcher.
+Teleport resets read the already updated authoritative player world pose, never
+the callback argument, which is local for far transport teleports and world for
+ordinary teleports. Regression cases cover both frames and an airborne passenger.
 The Docker builder runs both checks before compiling the full core.
 
 The isolated world drill must use disposable restored schemas and ordinary test

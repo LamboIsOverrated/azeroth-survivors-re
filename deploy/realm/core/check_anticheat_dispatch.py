@@ -97,14 +97,15 @@ struct GenericTransport {
 };
 struct HookPlayer {
     bool launched=true;
+    float x=1, y=2, z=1000;
     GenericTransport* transport=nullptr;
     GenericTransport* GetTransport() { return transport; }
     float GetSpeed(UnitMoveType) { return 7; }
     float GetSpeedRate(UnitMoveType) { return 1; }
     void SetSpeedRate(UnitMoveType,float,bool) {}
     char const* GetName() { return "Test"; }
-    float GetPositionX() { return 1; } float GetPositionY() { return 2; }
-    float GetPositionZ() { return 1000; } float GetOrientation() { return 0; }
+    float GetPositionX() { return x; } float GetPositionY() { return y; }
+    float GetPositionZ() { return z; } float GetOrientation() { return 0; }
     bool HasAuraType(int) { return false; }
     void SetLaunched(bool value) { launched=value; }
 };
@@ -114,7 +115,7 @@ struct HookMovement {
     RealmBrowser::AirborneCeiling _browserAir; RealmBrowser::KnockbackEnvelope _browserKnockback;
     ObjectGuid _browserFrame; double _browserLastAirZ=0;
     bool _browserHasFrame=false, _browserSlowFall=false;
-    void ResetBrowserMovement(Position const&);
+    void ResetBrowserMovement();
     bool HandleAnticheatTests(MovementInfo&,WorldSession*,WorldPacket const&) {
         ++diagnostics; _justTeleported=false; return true;
     }
@@ -142,9 +143,21 @@ void CheckHooks() {
     hookClock=61001; hooks.ExpireBrowserKnockback();
     assert(hooks._browserHasFrame && !hooks._browserKnockback.Active());
     GenericTransport transport; player.transport=&transport;
-    hooks.HandleTeleport({1,2,1000,0});
-    assert(hooks._browserFrame.value==7 && hooks._browserLastAirZ==800);
-    assert(hooks._browserAir.Accept(61100,800,800,false,fall));
+    // Far worldport callback carries LOCAL offsets after UpdatePassengerPosition.
+    player.x=101; player.y=102; player.z=203; hookClock=62000;
+    hooks.HandleTeleport({1,2,3,0});
+    assert(hooks._browserFrame.value==7 && hooks._browserLastAirZ==3);
+    assert(hooks._browserAir.Accept(62100,3,3,false,fall)); // Airborne passenger.
+    assert(!hooks._browserAir.Accept(62101,42,3,false,fall));
+    // Near callback carries WORLD coordinates: the same authoritative pose wins.
+    hookClock=63000; hooks.HandleTeleport({101,102,203,0});
+    assert(hooks._browserLastAirZ==3);
+    assert(hooks._browserAir.Accept(63100,3,3,false,fall));
+    // Ordinary world teleport has no transport transform at all.
+    player.transport=nullptr; player.z=500; hookClock=64000;
+    hooks.HandleTeleport({1,2,500,0});
+    assert(hooks._browserFrame.value==0 && hooks._browserLastAirZ==500);
+    assert(hooks._browserAir.Accept(64100,500,500,false,fall));
 }
 '''
 

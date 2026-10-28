@@ -126,14 +126,11 @@
      clientSpeeds[moveType] = newSpeed;
      return true;
  }
-@@ -896,9 +908,40 @@
+@@ -896,9 +908,43 @@
          _anticheat->RecordCheatInternal(CHEAT_TYPE_EXPLORE_HIGH_LEVEL);
  }
  
--void Movement::HandleTeleport(const Position &)
--{
--    _justTeleported = true;
-+void Movement::ResetBrowserMovement(Position const& pos)
++void Movement::ResetBrowserMovement()
 +{
 +    const uint32 now = WorldTimer::getMSTime();
 +    _browserKnockback.End();
@@ -142,7 +139,7 @@
 +    const double speed = std::max<double>(_me->GetSpeed(MOVE_RUN),
 +        std::max(_me->GetSpeed(MOVE_SWIM), _me->GetSpeed(MOVE_WALK)));
 +    _browserBudget.Reset(now, speed);
-+    float x = pos.x, y = pos.y, z = pos.z;
++    float x = _me->GetPositionX(), y = _me->GetPositionY(), z = _me->GetPositionZ();
 +    if (GenericTransport* transport = _me->GetTransport())
 +    {
 +        transport->CalculatePassengerOffset(x, y, z);
@@ -156,21 +153,25 @@
 +    _browserSlowFall = _me->HasAuraType(SPELL_AURA_FEATHER_FALL);
 +}
 +
-+void Movement::HandleTeleport(const Position &pos)
-+{
-+    // The callback receives the server destination after its teleport ACK.
-+    ResetBrowserMovement(pos);
+ void Movement::HandleTeleport(const Position &)
+ {
+-    _justTeleported = true;
++    // Both ACK callers have already updated the authoritative player pose.
++    // Their argument is ambiguous: far transport teleports supply LOCAL offsets,
++    // while ordinary teleports supply world coordinates. Read world pose once
++    // from the player, then convert once to the current server-owned frame.
++    ResetBrowserMovement();
 +    _justTeleported = true; // Stock diagnostics only; never a packet exemption.
 +}
 +
 +void Movement::ExpireBrowserKnockback()
 +{
 +    if (_browserKnockback.Expired(WorldTimer::getMSTime()))
-+        ResetBrowserMovement({_me->GetPositionX(), _me->GetPositionY(), _me->GetPositionZ(), _me->GetOrientation()});
++        ResetBrowserMovement();
  }
  
  void Movement::OnTransport(Player* plMover, ObjectGuid transportGuid)
-@@ -915,14 +958,6 @@
+@@ -915,14 +961,6 @@
  
  bool Movement::IsTeleportAllowed(MovementInfo const& movementInfo, float& distance)
  {
@@ -185,7 +186,7 @@
      // if knockbacked
      if (_me->IsLaunched())
          return true;
-@@ -972,6 +1007,135 @@
+@@ -972,6 +1010,135 @@
      }
  
      return movementInfo.fallTime != 0 || movementInfo.jump.zspeed != 0.0f;
@@ -349,7 +350,7 @@
          void HandleLeaveWorld();
          void TimeSkipped(const ObjectGuid &mover, uint32 ms);
          void HandleTeleport(const Position &pos);
-+        void ResetBrowserMovement(Position const& pos);
++        void ResetBrowserMovement();
 +        void ExpireBrowserKnockback();
  
          // verify movement flags.  when strict is true, it will include considering pending orders.  this is optional because warden also
