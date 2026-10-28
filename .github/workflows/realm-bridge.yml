@@ -40,6 +40,7 @@ jobs:
           npm run build --prefix deploy/realm
           npm test --prefix deploy/realm
           node --test deploy/realm/bridge/tests/*.test.mjs
+          node --test deploy/realm/bridge/accounting/tests/*.test.mjs
           g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test
           /tmp/world-bridge-test
           python3 -m unittest discover -s deploy/realm/bridge/tests -p 'test_*.py' -v
