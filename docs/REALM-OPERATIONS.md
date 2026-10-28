@@ -132,3 +132,5 @@ The repository safety tests are local and fixture-based; they do not satisfy the
 ```powershell
 python -W error::ResourceWarning -m unittest discover -s deploy/realm/ops/tests -v
 ```
+
+Verification evidence on 2026-10-28: all 20 operator safety tests passed under Python 3.11.2 in the actual Linux staging core container, including symlink rejection and POSIX `0600` archive/key checks. Only the operator source/tests and synthetic fixtures were staged beneath one private `/tmp/realm-ops-test-*` directory; the test subprocess's temporary directory was confined beneath it. The exact created directory's resolved `/tmp` parent and generated prefix were checked before removal, and its absence was verified afterward. No `/realm-data`, service configuration, active map process, real snapshot or real restore was touched. Windows verification passed 19 tests with the symlink-creation test skipped; the Linux run passed all 20 without skips. This establishes fixture safety behavior, not a completed live recovery drill.
