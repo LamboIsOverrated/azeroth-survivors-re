@@ -188,22 +188,38 @@ The movement policy consumes horizontal distance from a per-player budget refill
 only by the server's monotonic receipt clock and authoritative run/swim/walk
 speeds. Its burst allowance is two seconds of movement plus one yard; it never
 uses a submitted client timestamp. Server timer wrap is supported. Root/stun state
-comes from the server's unit state. Resets/exemptions come from server teleport,
-taxi, knockback and spline state, never incoming movement flags. Transport
+comes from the server's unit state. There are no packet-level teleport, taxi,
+knockback or spline exemptions. The authoritative teleport callback resets the
+budget and air origin from its server destination; the next packet still passes
+all ordinary distance, collision and physics checks. Speed acknowledgements leave
+that baseline intact and use the common movement validator once. Transport
 membership grants no blanket exemption: the transport must exist in the current
 map, match any active passenger membership, and produce the claimed world pose
 within ten yards. Offsets have symmetric bounds; accepted world coordinates are
 rebased to the server transform. Boarding requires proximity and a physical
 surface. Passenger motion consumes the same budget in local coordinates, and
 airborne checks use local Z so moving lifts do not create artificial flight.
-It rejects unpermitted flight/movement flags, map collision crossings and positions
-below the server's map surface. An airborne ceiling uses the actual core fall
-function for normal falls and its pinned constants with a corrected seven-yard
-terminal speed for feather fall. Server aura changes reset only the air baseline;
+Frame changes translate an existing air origin using the authoritative previous
+pose without resetting its clock or granting distance. Budget, air and frame
+changes are staged in copies and committed only after every validator accepts.
+It corrects or rejects unpermitted flight/movement flags, map collision crossings and positions
+below the server's map surface. An airborne ceiling uses the pinned gravity,
+jump and terminal-velocity constants, with a corrected seven-yard terminal speed
+for feather fall. Server aura changes reset only the air baseline;
 two yards of tolerance remain. Surface contact uses the server's map and explicit
 in/under-water status bits, excluding the core API's above-water state. Existing teleport checks also
 remain mandatory. Rejections leave character position unchanged and record bounded
 reason notifications through the existing anticheat counters/log database.
+
+Knockback records its server origin, receipt clock, direction and velocities.
+Incoming positions must match a coherent flight time inside a bounded two-second
+receipt window, a two-yard trajectory corridor, normal collision and map-surface
+checks. A verified first collision can end flight only near its server-computed
+hit point. A verified landing clears launch state without requiring LAND/SWIM;
+withheld opcodes cannot preserve an exemption. The world update expires any
+remaining envelope after sixty seconds and reanchors at the existing server pose.
+Actual knockback timing, wall/ceiling impacts, long falls and aura changes remain
+mandatory isolated-world tests before activation.
 
 Enablement generates `Enable=1`, `Warden.Enable=0`, speed diagnostics and log-only
 heuristic response masks. No generated heuristic action bans, silences or kicks.
@@ -216,8 +232,9 @@ Portable checks cover strict activation gates, source/hash/path rejection and th
 unchanged default image. The C++ executable exercises normal movement, bursts,
 tenfold speed, timer wrap, root, server teleport, finite values, jumping and hover
 refusal. `check_anticheat_dispatch.py SOURCE` extracts and compiles the actual
-patched dispatch/character-enumeration/Warden-packet methods with narrow engine
-boundary fakes. It checks validator order, refusal short-circuiting and Warden
+patched dispatch/character-enumeration/Warden-packet and authoritative reset,
+teleport, expiry and speed-ack methods with narrow engine boundary fakes. It checks
+validator order, refusal short-circuiting, post-teleport rejection, midair reset and Warden
 absence/presence; it fails against the original pinned movement dispatcher.
 The Docker builder runs both checks before compiling the full core.
 
@@ -240,7 +257,7 @@ The pinned extractors, their format versions, SQL and Classic DB remain in place
 Image metadata sets both bot capabilities to `0` and TEST enablement to `0`.
 
 The image build runs `smoke_runtime.py`: generated runtime arguments are parsed
-by the actual new `mangosd`/`realmd` binaries using `--help`, compiled PlayerBots
+by actual new `mangosd --help` and `realmd --version`, compiled PlayerBots
 support is checked against the declaration, optional module configuration is
 checked, and a real Linux maintenance process must have no child processes and
 serve maintenance/503 readiness. These checks require no SQL or game assets.

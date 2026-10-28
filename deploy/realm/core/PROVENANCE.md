@@ -123,3 +123,14 @@ world transform before using it. Boarding charges distance to the server-rebased
 position, and subsequent passenger movement charges relative distance; transport
 membership is never a global budget/physics exemption. Actual ship/lift boarding,
 latency and jump acceptance remain explicit isolated-world gates.
+
+The follow-up carry removes `_justTeleported` and `IsLaunched()` as browser
+validation exemptions. `HandleTeleport` consumes the authoritative destination
+to reset the budget and airborne origin; speed acknowledgements no longer consume
+stock movement state ahead of the common validator. Knockback uses server-clock
+origin/direction/velocity envelopes with coherent XY/Z flight time, mandatory map
+checks and opcode-independent landing/expiry. Transport frame changes translate
+air origins without resetting their time. Source tests compile the actual reset,
+teleport, expiry and speed-ack methods, while standalone models cover withheld
+landing, timer wrap, trajectory forgery and world/local air-frame changes. Full
+image and isolated actual-world acceptance remain separate prerequisites.
