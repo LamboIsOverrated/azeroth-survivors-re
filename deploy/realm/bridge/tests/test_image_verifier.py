@@ -55,7 +55,9 @@ class ImageSourceTests(unittest.TestCase):
             if command[0] == 'ldd':
                 return subprocess.CompletedProcess(command, 0, '/lib64/ld-linux-x86-64.so.2 (0x1)', '')
             allowed = (Path(command[0]).name == 'realmd' and command[1:] == ['--version']) or (Path(command[0]).name == 'mangosd' and command[1:] == ['--help'])
-            return subprocess.CompletedProcess(command, 0 if allowed else 1, 'Allowed options: -c config --version', '' if allowed else "unrecognised option '--help'")
+            # The pinned Main.cpp lists AH bot configuration unconditionally,
+            # even when its world update scheduler was compiled out.
+            return subprocess.CompletedProcess(command, 0 if allowed else 1, 'Allowed options: -c config --version --ahbot file', '' if allowed else "unrecognised option '--help'")
         environment = {'CORE_PLAYERBOTS_COMPILED': '0', 'CORE_AHBOT_COMPILED': '0', 'REALM_BRIDGE_TEST_ENABLE': '0'}
         with mock.patch.dict(os.environ, environment), mock.patch.object(verify_image.subprocess, 'run', side_effect=process):
             verify_image.verify_runtime()

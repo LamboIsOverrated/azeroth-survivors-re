@@ -51,7 +51,10 @@ def verify_runtime(root='/'):
         help_result = subprocess.run([binary, probe], capture_output=True, text=True, timeout=15)
         if help_result.returncode:
             raise ValueError('Actual binary argument parsing failed for ' + name)
-        if name == 'mangosd' and any(flag in help_result.stdout.lower() for flag in ('playerbot', 'ahbot')):
+        # Main.cpp at this pin always declares the AH configuration option.
+        # Only the playerbot/aiplayerbot CLI is conditional on compiled support;
+        # AH scheduling is checked by the pinned build flag and runtime policy.
+        if name == 'mangosd' and 'playerbot' in help_result.stdout.lower():
             raise ValueError('Image world binary unexpectedly includes a background bot CLI')
 
 
