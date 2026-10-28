@@ -33,6 +33,7 @@ jobs:
       - name: Verify durable TEST outbox and C++ fault harness
         run: |
           npm ci --prefix deploy/realm
+          npm run build --prefix deploy/realm
           npm test --prefix deploy/realm
           node --test deploy/realm/bridge/tests/*.test.mjs
           g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test
