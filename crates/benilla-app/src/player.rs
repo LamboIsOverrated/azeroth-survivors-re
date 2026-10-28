@@ -47,6 +47,8 @@ mod follow;
 mod gait;
 mod input;
 // `pub(crate)` for its `LandHere` message, which the debug panel writes.
+#[cfg(target_arch = "wasm32")]
+mod browser_mode_ack;
 #[cfg(any(target_arch = "wasm32", test))]
 mod browser_movement;
 #[cfg(target_arch = "wasm32")]

@@ -26,6 +26,8 @@ pub(super) fn read_move_time_skipped(r: &mut &[u8]) -> io::Result<(u64, u32)> {
 /// jump tail if `JUMPING`, then a spline-elevation `f32` if `SPLINE_ELEVATION`, read and dropped.
 pub(super) fn read_movement_info(r: &mut impl Read) -> io::Result<MovementInfo> {
     let flags = read_u32_le(r)?;
+    #[cfg(any(target_arch = "wasm32", test))]
+    let flags = super::browser_movement_flags::incoming(flags);
     let timestamp = read_u32_le(r)?;
     let position = Vector3d::read(r)?;
     let orientation = read_f32_le(r)?;
@@ -251,7 +253,11 @@ pub struct MovementInfo {
 
 impl MovementInfo {
     pub(super) fn write(&self, w: &mut Vec<u8>) {
-        w.extend_from_slice(&self.flags.to_le_bytes());
+        #[cfg(any(target_arch = "wasm32", test))]
+        let flags = super::browser_movement_flags::outgoing(self.flags);
+        #[cfg(not(any(target_arch = "wasm32", test)))]
+        let flags = self.flags;
+        w.extend_from_slice(&flags.to_le_bytes());
         w.extend_from_slice(&self.timestamp.to_le_bytes());
         w.extend_from_slice(&self.position.x.to_le_bytes());
         w.extend_from_slice(&self.position.y.to_le_bytes());

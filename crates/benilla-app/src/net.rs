@@ -71,6 +71,11 @@ impl Plugin for NetPlugin {
         crate::query_cache::register::<crate::names::NameCache>(app);
         crate::query_cache::register::<crate::go_templates::GameObjectTemplates>(app);
         crate::query_cache::register::<crate::items::Items>(app);
+        #[cfg(target_arch = "wasm32")]
+        benilla_protocol::messages::configure_browser_movement_profile(
+            crate::webenv::var("WOW_TRANSPORT_PROFILE").as_deref(),
+        )
+        .expect("unsupported browser movement profile");
         let handles = io::spawn_net(self.connect);
         if !self.connect {
             app.insert_resource(NetOffline);
@@ -1802,6 +1807,14 @@ pub(crate) enum ClientCommand {
         flags: u32,
         pos: [f32; 3],
         orientation: f32,
+    },
+    #[cfg(target_arch = "wasm32")]
+    BrowserMoveModeAck {
+        guid: u64,
+        counter: u32,
+        mode: MoveMode,
+        apply: bool,
+        movement: benilla_protocol::messages::BrowserModeMovement,
     },
     /// `CMSG_MOVE_KNOCK_BACK_ACK`, `launch` echoed as the jump tail. Sent on the frame the mover
     /// takes off, never on receipt: the reference applies (`0x61624d call 0x6179c0`) then sends

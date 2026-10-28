@@ -807,6 +807,10 @@ pub(super) fn control(
 
         // Stream the movement: a `MSG_MOVE_*` per axis transition, the jump and fall edges and a
         // 500 ms heartbeat, which vmangos relays to nearby players.
+        #[cfg(target_arch = "wasm32")]
+        {
+            player.browser_mode_pitch = swim_pitch;
+        }
         let wire_transport = movement_net::wire_transport(&player);
         // A held frame is simulation time skipped; the mover named is the one we drive.
         let skip = movement_net::SkipClock {

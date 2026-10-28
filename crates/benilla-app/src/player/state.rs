@@ -287,6 +287,9 @@ pub(crate) fn incapacitated_flags(flags: u32, translate_gated: bool, turn_gated:
 pub(crate) struct Player {
     #[cfg(any(target_arch = "wasm32", test))]
     pub(super) browser_movement: super::browser_movement::BrowserMovement,
+    /// The swim pitch actually emitted, including the surface-cap redirect.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) browser_mode_pitch: f32,
     pub(crate) active: bool,
     /// The modes the server has granted our mover.
     pub(super) modes: MoveModes,

@@ -1422,6 +1422,14 @@ pub(super) fn dispatch(w: &mut WorldWriter, cmd: ClientCommand) -> Result<()> {
             pos,
             orientation,
         } => w.move_mode_ack(guid, counter, mode, apply, flags, (pos, orientation)),
+        #[cfg(target_arch = "wasm32")]
+        ClientCommand::BrowserMoveModeAck {
+            guid,
+            counter,
+            mode,
+            apply,
+            movement,
+        } => w.browser_move_mode_ack(guid, counter, mode, apply, movement),
         ClientCommand::KnockBackAck {
             guid,
             counter,

@@ -111,6 +111,8 @@ impl MovementBlock {
 
         if update_flag & UPDATE_FLAG_LIVING != 0 {
             let flags = read_u32_le(r)?;
+            #[cfg(any(target_arch = "wasm32", test))]
+            let flags = super::super::browser_movement_flags::incoming(flags);
             let _timestamp = read_u32_le(r)?;
             let living_position = Vector3d::read(r)?;
             let living_orientation = read_f32_le(r)?;

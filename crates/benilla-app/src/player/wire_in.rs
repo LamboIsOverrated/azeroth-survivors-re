@@ -239,6 +239,7 @@ pub(super) fn apply_server_moves(
     for m in mode_msgs.read() {
         player.modes.set(m.mode, m.apply);
         if m.mode == MoveMode::Root && m.apply {
+            #[cfg(not(target_arch = "wasm32"))]
             movement_net::park_mover(&net_cmds.0, player);
             player.airborne_since = None;
             player.vel_y = 0.0;
@@ -251,7 +252,17 @@ pub(super) fn apply_server_moves(
         else if m.mode == MoveMode::Hover && m.apply {
             player.hover_launch = true;
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = net_cmds.0.send(ClientCommand::BrowserMoveModeAck {
+            guid: m.guid,
+            counter: m.counter,
+            mode: m.mode,
+            apply: m.apply,
+            movement: super::browser_mode_ack::snapshot(player, time.elapsed_secs()),
+        });
+        #[cfg(not(target_arch = "wasm32"))]
         let facing = player.face_yaw.rem_euclid(std::f32::consts::TAU);
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = net_cmds.0.send(ClientCommand::MoveModeAck {
             guid: m.guid,
             counter: m.counter,
@@ -430,6 +441,10 @@ fn apply_self_move(
     player.model_yaw = wrap_pi(player.model_yaw + dyaw);
     cam.yaw += dyaw;
     player.mover_pitch = m.pitch;
+    #[cfg(target_arch = "wasm32")]
+    {
+        player.browser_mode_pitch = m.pitch;
+    }
 
     // On a deck the packet moved us within the platform frame (`ON_TRANSPORT` is outside the mask):
     // re-anchor the local pose, or the next carry undoes the snap. Prefer the wire's deck-local
