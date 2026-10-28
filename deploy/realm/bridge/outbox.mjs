@@ -211,9 +211,14 @@ export class BridgeOutbox {
     if (
       receipt.state === "rejected" &&
       (before !== after ||
-        !["owner", "stale", "balance", "cap", "online"].includes(
-          receipt.reason,
-        ))
+        ![
+          "owner",
+          "stale",
+          "balance",
+          "cap",
+          "online",
+          "missing-character",
+        ].includes(receipt.reason))
     )
       throw new Error("Invalid durable world rejection");
   }

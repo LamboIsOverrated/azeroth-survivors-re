@@ -8,6 +8,7 @@ struct Receipt { std::string payload, state, before, after, reason; };
 struct Connection : SqlConnection {
  uint64 money = 50, owner = 1, online = 0, oldMoney = 0;
  bool inTransaction = false, configure = true, schema = true, loseCommitAck = false, commitApplied = true;
+ bool missingCharacter = false, characterQueryError = false, reasonColumnWide = true;
  std::string failPrefix;
  std::optional<std::string> fence;
  std::optional<Receipt> receipt, oldReceipt;
@@ -19,10 +20,12 @@ struct Connection : SqlConnection {
  std::unique_ptr<QueryResult> Query(char const* sql) override {
   std::string s(sql);
   if(s.find("information_schema.TABLES")!=std::string::npos)return Row({schema?"3":"0"});
+  if(s.find("information_schema.COLUMNS")!=std::string::npos)return Row({reasonColumnWide?"1":"0"});
   if(s=="SELECT COUNT(*) FROM realm_bridge_inflight")return schema?Row({fence?"1":"0"}):nullptr;
   if(s.find("SELECT payload FROM realm_bridge_inflight")==0)return fence?Row({*fence}):nullptr;
   if(s.find("FROM realm_bridge_receipts")!=std::string::npos)return receipt?Row({"1",receipt->payload,receipt->state,receipt->before,receipt->after,receipt->reason}):Row({"0","","","0","0",""});
-  if(s.find("SELECT account,money,online FROM characters")==0)return Row({std::to_string(owner),std::to_string(money),std::to_string(online)});
+  if(s.find("SELECT COUNT(*),COALESCE(MAX(account)")==0)return characterQueryError?nullptr:missingCharacter?Row({"0","0","0","0"}):Row({"1",std::to_string(owner),std::to_string(money),std::to_string(online)});
+  if(s.find("SELECT account,money,online FROM characters")==0)return (missingCharacter||characterQueryError)?nullptr:Row({std::to_string(owner),std::to_string(money),std::to_string(online)});
   assert(false);return nullptr;
  }
  bool Execute(char const* sql) override {
@@ -51,5 +54,8 @@ int main() {
  {Connection c;c.configure=false;assert(!Run(c).first&&c.money==50&&!c.receipt);}
  {Connection c;CharacterDatabase.failed=true;assert(!Run(c).first&&c.money==50);CharacterDatabase.failed=false;}
  {Connection c;c.schema=false;CharacterDatabase.connection=&c;assert(!RealmBridge::LoginPermitted());assert(!Run(c).first&&c.money==50);}
+ {Connection c;c.missingCharacter=true;auto result=Run(c);assert(result.first&&c.money==50&&!c.fence&&c.receipt&&c.receipt->state=="rejected"&&c.receipt->reason=="missing-character");assert(RealmBridge::LoginPermitted());assert(Run(c).first&&c.money==50);}
+ {Connection c;c.characterQueryError=true;assert(!Run(c).first&&c.money==50&&c.fence&&!c.receipt);assert(!RealmBridge::LoginPermitted());}
+ {Connection c;c.reasonColumnWide=false;assert(!Run(c).first&&c.money==50&&!c.fence&&!c.receipt);}
  std::cout<<"World bridge kernel: checked transactions, replay, rejection, lost-ack fence and recovery passed\n";
 }

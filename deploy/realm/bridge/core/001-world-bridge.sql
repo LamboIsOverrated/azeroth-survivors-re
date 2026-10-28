@@ -10,5 +10,5 @@ CREATE TABLE IF NOT EXISTS realm_bridge_receipts (
  state ENUM('applied','rejected') NOT NULL,
  before_money INT UNSIGNED NOT NULL,
  after_money INT UNSIGNED NOT NULL,
- reason VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
+ reason VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
 ) ENGINE=InnoDB;

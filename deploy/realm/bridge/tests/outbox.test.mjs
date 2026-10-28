@@ -255,3 +255,39 @@ test("trusted ownership and offline/loading state precede any reservation", asyn
   }
   assert.equal(f.ledger.balance(1), "100");
 });
+
+test("deleted character durable rejection refunds a reserved grant exactly once after restart", async (t) => {
+  const f = fixture(t),
+    row = await grant(f.box);
+  f.receipts.set(row.id, {
+    version: 1,
+    phase: "TEST",
+    id: row.id,
+    direction: "grant",
+    accountId: "1",
+    guid: "7",
+    units: "70",
+    expectedBefore: "50",
+    state: "rejected",
+    before: "0",
+    after: "0",
+    reason: "missing-character",
+  });
+  assert.equal(f.ledger.balance(1), "30");
+  assert.equal(
+    (await f.box.step({ accountId: 1, id: row.id })).state,
+    "rejected",
+  );
+  f.restart();
+  await Promise.all([
+    f.box.step({ accountId: 1, id: row.id }),
+    f.box.step({ accountId: 1, id: row.id }),
+  ]);
+  assert.equal(f.ledger.balance(1), "100");
+  assert.equal(f.applyCount, 0);
+  assert.equal(
+    f.ledger.history(1).filter((entry) => entry.kind === "test-bridge-release")
+      .length,
+    1,
+  );
+});

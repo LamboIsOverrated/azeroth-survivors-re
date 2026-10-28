@@ -62,6 +62,8 @@ class Operation final : public SqlOperation
         if (CharacterDatabase.HasQueuedExecutionFailure() || !conn->ConfigureWorldBridgeConnection()) return Result(r, "unknown");
         auto engines = conn->Query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('characters','realm_bridge_inflight','realm_bridge_receipts') AND ENGINE='InnoDB'");
         if (!engines || (*engines)[0].GetUInt32() != 3) return Result(r, "unknown");
+        auto receiptSchema = conn->Query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='realm_bridge_receipts' AND COLUMN_NAME='reason' AND DATA_TYPE='varchar' AND CHARACTER_MAXIMUM_LENGTH>=17");
+        if (!receiptSchema || (*receiptSchema)[0].GetUInt32() != 1) return Result(r, "unknown");
         // Autocommit fence precedes the money transaction. It survives an unknown
         // COMMIT result and blocks all new logins until a locking status read.
         if (!conn->Execute(("INSERT IGNORE INTO realm_bridge_inflight(operation_id,payload) VALUES('" + r.id + "','" + r.Payload() + "')").c_str())) return Result(r, "unknown");
@@ -85,12 +87,16 @@ class Operation final : public SqlOperation
             if (!conn->RollbackTransaction()) return Result(r, "unknown"); transaction = false;
             if (!FinishFence(conn)) return Result(r, "unknown"); completion->known = true; return Result(r, "absent");
         }
-        auto character = conn->Query(("SELECT account,money,online FROM characters WHERE guid=" + r.guid + " FOR UPDATE").c_str());
-        if (!character) return Result(r, "unknown");
-        uint64 before = (*character)[1].GetUInt32(), after = before, quantity = std::stoull(r.units);
+        // An aggregate always returns one row for checked absence. nullptr remains
+        // a query failure. The inflight lock and this locking read stay in the
+        // same writer transaction; no empty-result/error guess can release funds.
+        auto character = conn->Query(("SELECT COUNT(*),COALESCE(MAX(account),0),COALESCE(MAX(money),0),COALESCE(MAX(online),0) FROM characters WHERE guid=" + r.guid + " FOR UPDATE").c_str());
+        if (!character || (*character)[0].GetUInt32() > 1) return Result(r, "unknown");
+        uint64 before = (*character)[2].GetUInt32(), after = before, quantity = std::stoull(r.units);
         std::string reason;
-        if ((*character)[0].GetUInt32() != std::stoull(r.account)) { reason = "owner"; before = after = 0; }
-        else if ((*character)[2].GetUInt32() != 0) reason = "online";
+        if ((*character)[0].GetUInt32() == 0) reason = "missing-character";
+        else if ((*character)[1].GetUInt32() != std::stoull(r.account)) { reason = "owner"; before = after = 0; }
+        else if ((*character)[3].GetUInt32() != 0) reason = "online";
         else if (before != std::stoull(r.expected)) reason = "stale";
         else if (r.direction == "debit" && before < quantity) reason = "balance";
         else if (r.direction == "grant" && before + quantity > 2147483646ULL) reason = "cap";
