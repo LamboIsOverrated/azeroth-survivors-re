@@ -1,0 +1,56 @@
+# Closed world-owner TEST escrow bridge
+
+This directory contains an **undeployed source patch and internal TEST outbox**, not production currency activation. The patch targets CMaNGOS Classic **de8f72993b9e1faa1bf92dd5505f3daec5cea3ce** exactly. No core Docker/runtime, deployed database, web route or live settlement code is changed by this directory. LIVE requests are rejected in both Node and C++ with no enable flag. A CA alone cannot enable this bridge.
+
+## What is implemented
+
+The outbox connects the existing persistent TEST account journal to an actual world-owned `characters.money` mutation through a typed, idempotent command. TEST vault units and TEST game units use an explicit 1:1 mapping for this isolated test path; it does not establish a launch-token conversion. The current deployed wallet routes do not expose this outbox.
+
+`new BridgeOutbox({dbPath,phase:'TEST',transport,authorizeCharacter})` opens the same **TEST** SQLite database as `economy/Ledger`. It never reads or writes the settlement engine's `live_*` tables. `authorizeCharacter(accountId,guid)` must come from trusted realm/core data and return exact `{accountId,guid,moneyUnits,online:false,loading:false}`; a last-saved `online:false` alone does not prove no login is in flight. The C++ world owner separately enforces the stronger whole-world fence below.
+
+`enqueue({accountId,idempotencyKey,guid,units,direction})` accepts `grant` or `debit`, exact positive decimal strings in the Classic cap, and server-derived account/ownership. A grant atomically debits actual TEST journal units and inserts the durable immutable outbox intent; it cannot overdraw or change a reused request key. A debit does not credit the account before a proven world receipt. The expected prior character money comes from the trusted snapshot, never browser input.
+
+`step({accountId,id})` persists `pending`, queries the same operation's world receipt, and submits the same immutable operation only after a checked absence. A valid applied debit credits the TEST journal once. A durable world rejection refunds a reserved grant once. Lost replies, malformed output, conflicting account/amount data, busy world, disabled command, and unknown commit results retain pending funds. Restart/retry reconciles by operation ID, never by guessing from current money. `pending()` is a capped internal recovery listing; an eventual operational worker needs pagination and scheduling. `get()` enforces account ownership. These are internal methods, not authenticated public endpoints.
+
+`worldTransport({url,username,password,fetchImpl})` implements the private SOAP envelope and response decoder. It permits only the fixed typed TEST command grammar, fixed private/loopback URL, no redirect, a timeout, and a 64 KiB response cap. XML faults, DTD/entities, multiple results and malformed receipts fail closed. Credentials must be supplied by a future approved server integration and are never included in an outbox row or command.
+
+## Why the world owner must perform the mutation
+
+At the pin, `Player::SaveToDB()` queues a DELETE/INSERT of the complete character row, including money. A direct Node/MariaDB update can be overwritten by that older queued save or by an online player's later in-memory save. `Database::CommitTransactionDirect()` ignores `SqlTransaction::Execute()`'s result and returns true; `SqlTransaction::Execute()` itself does not check BeginTransaction. Neither is used to acknowledge bridge settlement.
+
+SOAP already queues commands onto `World::ProcessCliCommands()`. That runs after `MapManager::Update()` waits for map workers. The patch registers a console-only `realmbridge` handler with an additional `GetSession()==nullptr` check. For **every apply**, it requires no active/queued sessions, no pending session-add queue and no players in ObjectAccessor. Builds with playerbots or AH bot support reject applies even if their runtime settings are off. This is deliberately a **whole-world maintenance outage for every bridge change**, not an online-player bridge. No target player memory exists to update; newly arriving sessions cannot be processed while the world thread is waiting.
+
+The handler queues a custom operation on the **existing single-writer CharacterDatabase FIFO**, after all previously enqueued saves, then waits without resuming world updates. Its shared promise/completion owns its data across caller timeouts. It uses that writer's `SqlConnection` directly, explicitly disables client auto-reconnect, requires all three affected tables to be InnoDB, and checks Begin/Execute/read-back/Commit. It checks the new queue execution-failure flag; an earlier reported writer failure forbids an acknowledgement.
+
+Before the money transaction, it commits an `realm_bridge_inflight` row in autocommit mode. Inside the transaction it locks that row, checks the immutable request, locks the owned offline character, checks the expected prior money and cap, performs/read-checks the update, and inserts the receipt in the **same InnoDB transaction**. A duplicate operation returns the immutable receipt. Owner, online, stale, insufficient and cap errors receive durable rejected receipts, rather than an optimistic success.
+
+## Indeterminate commits and the persistent login fence
+
+A failed commit response is not proof of rollback. The inflight row therefore survives until a **checked** result and fence removal. On any indeterminate worker outcome the world stops before processing another session. Patched `World::AddSession_()` denies new sessions whenever a fence exists, its query fails, or a prior queued write reported failure. This gate remains active even when the TEST command enable setting is absent. **The migration is consequently mandatory before running this patched core; missing tables deny logins.**
+
+After restart, a typed `status` operation locks the inflight row. That waits for any earlier transaction holding it to finish, then reads the receipt on the same connection. A receipt proves applied/rejected; checked absence after that locking barrier proves no bridge mutation committed. Only then is the fence removed. Never manually delete an inflight row to get players back online. A lost fence-removal acknowledgement is itself indeterminate and must be reconciled again.
+
+The patch also fixes the pinned SOAP worker's unsynchronized completion booleans: release/acquire publication makes the output buffer and command result visible before the waiting SOAP thread reads them. A browser/HTTP timeout does not cancel a world-owned command or destroy its completion state.
+
+## Source artifact, verification and rollout gates
+
+`core/world-bridge.patch` is the reviewable carry. `core/WorldBridge.h` is its readable kernel source; `core/pinned-sources.json` records hashes of all exact original files. `tools/generate-patch.mjs` fetches only that official pinned source into ignored `.audit/`, generates the patch, and checks application. For a clean checkout:
+
+```text
+node deploy/realm/bridge/tools/apply-patch.mjs /path/to/pinned/core
+node deploy/realm/bridge/tools/apply-patch.mjs /path/to/pinned/core --apply
+```
+
+The first command only verifies the revision, clean working tree, source hashes and applicability. The second applies source only, with no database or deployment mutation. A reviewed future rollout must install `core/001-world-bridge.sql` in maintenance, inspect existing InnoDB/durability settings, compile the full pinned core **without bot/AH bot support**, and explicitly set `REALM_BRIDGE_TEST_ENABLE=1` only for private TEST acceptance. There is no LIVE equivalent. Preserve upstream GPL-2.0-or-later attribution and include this patch in shipped source.
+
+`tools/verify-core.sh /clean/pinned/source /separate/build/directory` applies the verified carry and compiles the actual `mangosd` and `realmd` targets with bots/AH bots disabled. It does not start a realm or touch a database. On Debian bookworm the companion build dependencies are `build-essential cmake git ca-certificates libboost-all-dev libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev`; clone the core recursively and check out the exact revision with pinned submodules before invoking it. The existing pinned runtime image contains only core SQL/contrib under `/opt/src/mangos-classic`, not compilable source or a toolchain. The original source build entry is `deploy/realm/core/build-source.sh`, but its companion flags enable bots and must not be mistaken for this bridge acceptance build. No CMake source-list change is needed: the new header is included by the existing Level3.cpp and World.cpp translation units.
+
+Verified here: exact-pinned patch application; the actual C++ kernel compiles under MSVC C++17 and passes an executable fault model for rollback, replay, rejection, both lost-commit-ack outcomes, persistent login fence and status recovery; Node tests use file-backed SQLite and lost SOAP replies. **The C++ harness uses a transaction model, not MariaDB, and is not a full CMaNGOS build.** Full pinned-core compilation, real MariaDB fault injection, orderly queue-drain/restart, login-race and two-account gameplay acceptance are required before deploying the patch. It has not been deployed or exercised against the live realm.
+
+Run Node checks with `node --test deploy/realm/bridge/tests/*.test.mjs`. On Linux compile the kernel harness with `g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test` and execute it. The equivalent MSVC C++17 harness passed locally.
+
+## LIVE work still required
+
+Every positive game issuance must be backed before any game balance becomes redeemable: character creation/start money, quest and loot income, sales, mail/auction flows, scripted/GM grants, refunds and every other money-changing path need a complete issuance/reserve policy and audit. The inherited TEST world does not satisfy that policy. This code does not convert TEST characters, items or money into live claims. The live settlement engine remains separate and public deposit/withdraw endpoints stay disabled.
+
+Further gates include immutable mint/game-unit conversion, funded reserve and fee accounts, approved signing/custody, a live vault↔world reservation journal that cannot import TEST funds, audit of every world write/memory/queue path, an online-player fence or acceptance of the maintenance-only limitation, durable worker scheduling, authentication/CSRF/user confirmation, request limits, DB privileges/durability, backup/restore drills, real disconnect/commit fault tests and independent source/security review. Supply of a CA does not fulfill these gates.

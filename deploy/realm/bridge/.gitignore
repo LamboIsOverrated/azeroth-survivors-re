@@ -1,0 +1,3 @@
+.audit/
+.chat-audit.txt
+*.sqlite*

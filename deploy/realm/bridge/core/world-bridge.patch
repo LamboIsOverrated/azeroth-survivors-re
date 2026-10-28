@@ -1,0 +1,355 @@
+diff --git a/src/shared/Database/Database.h b/src/shared/Database/Database.h
+index e11773b..a226a79 100644
+--- a/src/shared/Database/Database.h
++++ b/src/shared/Database/Database.h
+@@ -58,6 +58,7 @@ class SqlConnection
+         virtual unsigned long escape_string(char* to, const char* from, unsigned long length) { strncpy(to, from, length); return length; }
+ 
+         // nothing do if DB not support transactions
++        virtual bool ConfigureWorldBridgeConnection() { return false; }
+         virtual bool BeginTransaction() { return true; }
+         virtual bool CommitTransaction() { return true; }
+         // can't rollback without transaction support
+@@ -190,6 +191,8 @@ class Database
+         bool RollbackTransaction();
+         // for sync transaction execution
+         bool CommitTransactionDirect();
++        bool QueueWorldBridge(SqlOperation* operation);
++        bool HasQueuedExecutionFailure() const;
+ 
+         // PREPARED STATEMENT API
+ 
+diff --git a/src/shared/Database/Database.cpp b/src/shared/Database/Database.cpp
+index f7e4a30..a91730f 100644
+--- a/src/shared/Database/Database.cpp
++++ b/src/shared/Database/Database.cpp
+@@ -623,3 +623,14 @@ std::string Database::GetStmtString(const int stmtId) const
+ 
+     return std::string();
+ }
++
++// Ownership transfers only when the existing single-writer FIFO accepts the job.
++bool Database::QueueWorldBridge(SqlOperation* operation)
++{
++    if (!operation || !m_allowAsyncTransactions || !m_threadBody || m_currentTransaction.get()) return false;
++    return m_threadBody->Delay(operation);
++}
++bool Database::HasQueuedExecutionFailure() const
++{
++    return !m_threadBody || m_threadBody->HasExecutionFailure();
++}
+diff --git a/src/shared/Database/DatabaseMysql.h b/src/shared/Database/DatabaseMysql.h
+index 079a83d..a5c98ed 100644
+--- a/src/shared/Database/DatabaseMysql.h
++++ b/src/shared/Database/DatabaseMysql.h
+@@ -76,6 +76,11 @@ class MySQLConnection : public SqlConnection
+ 
+         unsigned long escape_string(char* to, const char* from, unsigned long length) override;
+ 
++        bool ConfigureWorldBridgeConnection() override
++        {
++            bool reconnect = false;
++            return mMysql && mysql_options(mMysql, MYSQL_OPT_RECONNECT, &reconnect) == 0;
++        }
+         bool BeginTransaction() override;
+         bool CommitTransaction() override;
+         bool RollbackTransaction() override;
+diff --git a/src/shared/Database/SqlDelayThread.h b/src/shared/Database/SqlDelayThread.h
+index ff23e1e..1088f9f 100644
+--- a/src/shared/Database/SqlDelayThread.h
++++ b/src/shared/Database/SqlDelayThread.h
+@@ -39,6 +39,7 @@ class SqlDelayThread : public MaNGOS::Runnable
+         Database* m_dbEngine;                                   ///< Pointer to used Database engine
+         SqlConnection* m_dbConnection;                          ///< Pointer to DB connection
+         std::atomic<bool> m_running;
++        std::atomic<bool> m_executionFailed{false};
+ 
+         // process all enqueued requests
+         void ProcessRequests();
+@@ -55,6 +56,7 @@ class SqlDelayThread : public MaNGOS::Runnable
+             return true;
+         }
+ 
++        bool HasExecutionFailure() const { return m_executionFailed.load(); }
+         virtual void Stop();                                ///< Stop event
+         virtual void run();                                 ///< Main Thread loop
+ };
+diff --git a/src/shared/Database/SqlDelayThread.cpp b/src/shared/Database/SqlDelayThread.cpp
+index bf4a049..29a177c 100644
+--- a/src/shared/Database/SqlDelayThread.cpp
++++ b/src/shared/Database/SqlDelayThread.cpp
+@@ -85,6 +85,6 @@ void SqlDelayThread::ProcessRequests()
+     {
+         auto const s = std::move(sqlQueue.front());
+         sqlQueue.pop();
+-        s->Execute(m_dbConnection);
++        if (!s->Execute(m_dbConnection)) m_executionFailed = true;
+     }
+ }
+diff --git a/src/game/Chat/Chat.h b/src/game/Chat/Chat.h
+index 47d2600..711b01e 100644
+--- a/src/game/Chat/Chat.h
++++ b/src/game/Chat/Chat.h
+@@ -196,6 +196,7 @@ class ChatHandler
+ 
+ #include "Anticheat/module/AnticheatChatCommandsFunctions.h"
+ 
++        bool HandleRealmBridgeCommand(char* args);
+         bool HandleAccountCommand(char* args);
+         bool HandleAccountCharactersCommand(char* args);
+         bool HandleAccountCreateCommand(char* args);
+diff --git a/src/game/Chat/Chat.cpp b/src/game/Chat/Chat.cpp
+index 9b9f699..240a412 100644
+--- a/src/game/Chat/Chat.cpp
++++ b/src/game/Chat/Chat.cpp
+@@ -903,6 +903,7 @@ ChatCommand* ChatHandler::getCommandTable()
+ 
+     static ChatCommand commandTable[] =
+     {
++        { "realmbridge", SEC_CONSOLE, true, &ChatHandler::HandleRealmBridgeCommand, "", nullptr },
+         { "anticheat",      SEC_GAMEMASTER,     true,  nullptr,                                           "", anticheatCommandTable},
+         { "account",        SEC_PLAYER,         true,  nullptr,                                           "", accountCommandTable  },
+         { "auction",        SEC_ADMINISTRATOR,  false, nullptr,                                           "", auctionCommandTable  },
+diff --git a/src/game/Chat/Level3.cpp b/src/game/Chat/Level3.cpp
+index 9f87b39..d11ecf7 100644
+--- a/src/game/Chat/Level3.cpp
++++ b/src/game/Chat/Level3.cpp
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "Common.h"
++#include "Database/WorldBridge.h"
+ #include "Database/DatabaseEnv.h"
+ #include "Server/WorldSession.h"
+ #include "World/World.h"
+@@ -7362,3 +7363,29 @@ bool ChatHandler::HandleGoNextCommand(char* args)
+ 
+     return HandleGoHelper(player, mapId, x, y, &z);
+ }
++
++// TEST-only world-owner bridge. LIVE game issuance is not yet reserve-backed.
++bool ChatHandler::HandleRealmBridgeCommand(char* args)
++{
++    RealmBridge::Request request;
++    if (GetSession() || !RealmBridge::Parse(args, request)) return false;
++    if (request.action == "apply")
++    {
++        char const* enabled = std::getenv("REALM_BRIDGE_TEST_ENABLE");
++        if (!enabled || std::string(enabled) != "1" || !sWorld.IsRealmBridgeQuiescent() || !sObjectAccessor.GetPlayers().empty())
++        { PSendSysMessage("REALM_BRIDGE_V1 %s", RealmBridge::Result(request, "waiting").c_str()); return true; }
++#if defined(ENABLE_PLAYERBOTS) || defined(BUILD_AHBOT)
++        PSendSysMessage("REALM_BRIDGE_V1 %s", RealmBridge::Result(request, "closed").c_str()); return true;
++#endif
++    }
++    auto completion = std::make_shared<RealmBridge::Completion>();
++    auto result = completion->promise.get_future();
++    auto operation = new RealmBridge::Operation(request, completion);
++    if (!CharacterDatabase.QueueWorldBridge(operation)) { delete operation; return false; }
++    // Do not resume world updates, sessions or callbacks before a checked result.
++    // A caller's SOAP timeout must NEVER cancel or destroy this operation.
++    std::string output = result.get();
++    PSendSysMessage("REALM_BRIDGE_V1 %s", output.c_str());
++    if (!completion->known) World::StopNow(ERROR_EXIT_CODE);
++    return true;
++}
+diff --git a/src/game/World/World.cpp b/src/game/World/World.cpp
+index 94110f3..f6e51de 100644
+--- a/src/game/World/World.cpp
++++ b/src/game/World/World.cpp
+@@ -21,6 +21,7 @@
+ */
+ 
+ #include "World/World.h"
++#include "Database/WorldBridge.h"
+ #include "Database/DatabaseEnv.h"
+ #include "Config/Config.h"
+ #include "Platform/Define.h"
+@@ -217,6 +218,7 @@ void
+ World::AddSession_(WorldSession* s)
+ {
+     MANGOS_ASSERT(s);
++    if (!RealmBridge::LoginPermitted()) { s->KickPlayer(); delete s; return; }
+ 
+     if (FindSession(s->GetAccountId()))
+     {
+diff --git a/src/game/World/World.h b/src/game/World/World.h
+index 5d19b35..3136730 100644
+--- a/src/game/World/World.h
++++ b/src/game/World/World.h
+@@ -402,6 +402,11 @@ class World
+ 
+         WorldSession* FindSession(uint32 id) const;
+         void AddSession(WorldSession* s);
++        bool IsRealmBridgeQuiescent()
++        {
++            std::lock_guard<std::mutex> lock(m_sessionAddQueueLock);
++            return m_sessions.empty() && m_QueuedSessions.empty() && m_sessionAddQueue.empty();
++        }
+         bool RemoveSession(uint32 id);
+         /// Get the number of current active sessions
+         void UpdateMaxSessionCounters();
+diff --git a/src/mangosd/MaNGOSsoap.cpp b/src/mangosd/MaNGOSsoap.cpp
+index 730a8eb..e34a7d2 100644
+--- a/src/mangosd/MaNGOSsoap.cpp
++++ b/src/mangosd/MaNGOSsoap.cpp
+@@ -19,6 +19,7 @@
+ #include "MaNGOSsoap.h"
+ 
+ #include <string>
++#include <atomic>
+ 
+ SOAPThread::SOAPThread(const std::string& host, int port) : m_host(host), m_port(port), m_workerThread(&SOAPThread::Work, this) {}
+ 
+@@ -105,7 +106,8 @@ int ns1__executeCommand(soap* soap, char* command, char** result)
+ 
+     DEBUG_LOG("MaNGOSsoap: got command '%s'", command);
+ 
+-    bool commandExecuted = false, commandSucceeded = false;
++    std::atomic<bool> commandExecuted{false};
++    bool commandSucceeded = false;
+     std::vector<char> buffer;
+     buffer.reserve(SOAPThread::CommandOutputBufferSize);
+ 
+@@ -120,11 +122,11 @@ int ns1__executeCommand(soap* soap, char* command, char** result)
+     },
+     [soap, &commandExecuted, &commandSucceeded](bool success)
+     {
+-        commandExecuted = true;
+         commandSucceeded = success;
++        commandExecuted.store(true, std::memory_order_release);
+     }));
+ 
+-    while (!commandExecuted)
++    while (!commandExecuted.load(std::memory_order_acquire))
+         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+ 
+     buffer.push_back(0);
+diff --git a/src/shared/Database/WorldBridge.h b/src/shared/Database/WorldBridge.h
+new file mode 100644
+--- /dev/null
++++ b/src/shared/Database/WorldBridge.h
+@@ -0,0 +1,124 @@
++// Realm bridge carry for CMaNGOS de8f72993b9e1faa1bf92dd5505f3daec5cea3ce.
++// GPL-2.0-or-later, consistent with the hosting CMaNGOS source.
++#ifndef REALM_WORLD_BRIDGE_H
++#define REALM_WORLD_BRIDGE_H
++#include "Database/DatabaseEnv.h"
++#include "Database/SqlOperations.h"
++#include <cstdlib>
++#include <future>
++#include <sstream>
++#include <memory>
++#include <array>
++
++namespace RealmBridge
++{
++struct Request
++{
++    std::string action, id, direction, account, guid, units, expected;
++    std::string Payload() const { return "v1 TEST " + id + " " + direction + " " + account + " " + guid + " " + units + " " + expected; }
++};
++inline bool Decimal(std::string const& text, uint64 cap, bool zero = false)
++{
++    if (text.empty() || text.size() > 10 || (text.size() > 1 && text[0] == '0')) return false;
++    uint64 result = 0;
++    for (char c : text) { if (c < '0' || c > '9') return false; result = result * 10 + uint64(c - '0'); if (result > cap) return false; }
++    return zero || result != 0;
++}
++inline bool Parse(char const* args, Request& r)
++{
++    std::istringstream input(args ? args : ""); std::string version, phase, extra;
++    if (!(input >> version >> phase >> r.action >> r.id >> r.direction >> r.account >> r.guid >> r.units >> r.expected) || (input >> extra)) return false;
++    if (version != "v1" || phase != "TEST" || (r.action != "apply" && r.action != "status") || (r.direction != "grant" && r.direction != "debit") || r.id.size() != 64) return false;
++    for (char c : r.id) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
++    return Decimal(r.account, 4294967295ULL) && Decimal(r.guid, 4294967295ULL) && Decimal(r.units, 2147483646ULL) && Decimal(r.expected, 2147483646ULL, true);
++}
++inline std::string Result(Request const& r, std::string const& state, std::string before = "0", std::string after = "0", std::string reason = "")
++{
++    return "{\"version\":1,\"phase\":\"TEST\",\"id\":\"" + r.id + "\",\"direction\":\"" + r.direction + "\",\"accountId\":\"" + r.account + "\",\"guid\":\"" + r.guid + "\",\"units\":\"" + r.units + "\",\"expectedBefore\":\"" + r.expected + "\",\"state\":\"" + state + "\",\"before\":\"" + before + "\",\"after\":\"" + after + "\",\"reason\":\"" + reason + "\"}";
++}
++// Always fail closed on a missing schema or unresolved operation, even if the TEST
++// command is disabled. This gate is installed before a new WorldSession is loaded.
++inline bool LoginPermitted()
++{
++    if (CharacterDatabase.HasQueuedExecutionFailure()) return false;
++    auto result = CharacterDatabase.Query("SELECT COUNT(*) FROM realm_bridge_inflight");
++    return result && (*result)[0].GetUInt64() == 0;
++}
++struct Completion { std::promise<std::string> promise; bool known = false; };
++class Operation final : public SqlOperation
++{
++    Request request;
++    std::shared_ptr<Completion> completion;
++    bool transaction = false;
++    bool FinishFence(SqlConnection* conn)
++    {
++        return conn->Execute(("DELETE FROM realm_bridge_inflight WHERE operation_id='" + request.id + "' AND payload='" + request.Payload() + "'").c_str());
++    }
++    std::string Run(SqlConnection* conn)
++    {
++        Request const& r = request;
++        // This operation reaches the same FIFO writer connection AFTER older saves.
++        // Do not trust CommitTransactionDirect's boolean at this pinned revision.
++        if (CharacterDatabase.HasQueuedExecutionFailure() || !conn->ConfigureWorldBridgeConnection()) return Result(r, "unknown");
++        auto engines = conn->Query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('characters','realm_bridge_inflight','realm_bridge_receipts') AND ENGINE='InnoDB'");
++        if (!engines || (*engines)[0].GetUInt32() != 3) return Result(r, "unknown");
++        // Autocommit fence precedes the money transaction. It survives an unknown
++        // COMMIT result and blocks all new logins until a locking status read.
++        if (!conn->Execute(("INSERT IGNORE INTO realm_bridge_inflight(operation_id,payload) VALUES('" + r.id + "','" + r.Payload() + "')").c_str())) return Result(r, "unknown");
++        if (!conn->BeginTransaction()) return Result(r, "unknown");
++        transaction = true;
++        auto fence = conn->Query(("SELECT payload FROM realm_bridge_inflight WHERE operation_id='" + r.id + "' FOR UPDATE").c_str());
++        if (!fence || (*fence)[0].GetCppString() != r.Payload()) return Result(r, "unknown");
++        // The row lock above waits for any previous indeterminate transaction.
++        // COUNT returns a row on absence; nullptr is ALWAYS an error, never absence.
++        auto old = conn->Query(("SELECT COUNT(*),COALESCE(MAX(payload),''),COALESCE(MAX(state),''),COALESCE(MAX(before_money),0),COALESCE(MAX(after_money),0),COALESCE(MAX(reason),'') FROM realm_bridge_receipts WHERE operation_id='" + r.id + "'").c_str());
++        if (!old) return Result(r, "unknown");
++        if ((*old)[0].GetUInt32() != 0)
++        {
++            if ((*old)[0].GetUInt32() != 1 || (*old)[1].GetCppString() != r.Payload()) return Result(r, "unknown");
++            std::string result = Result(r, (*old)[2].GetCppString(), std::to_string((*old)[3].GetUInt32()), std::to_string((*old)[4].GetUInt32()), (*old)[5].GetCppString());
++            if (!conn->RollbackTransaction()) return Result(r, "unknown"); transaction = false;
++            if (!FinishFence(conn)) return Result(r, "unknown"); completion->known = true; return result;
++        }
++        if (r.action == "status")
++        {
++            if (!conn->RollbackTransaction()) return Result(r, "unknown"); transaction = false;
++            if (!FinishFence(conn)) return Result(r, "unknown"); completion->known = true; return Result(r, "absent");
++        }
++        auto character = conn->Query(("SELECT account,money,online FROM characters WHERE guid=" + r.guid + " FOR UPDATE").c_str());
++        if (!character) return Result(r, "unknown");
++        uint64 before = (*character)[1].GetUInt32(), after = before, quantity = std::stoull(r.units);
++        std::string reason;
++        if ((*character)[0].GetUInt32() != std::stoull(r.account)) { reason = "owner"; before = after = 0; }
++        else if ((*character)[2].GetUInt32() != 0) reason = "online";
++        else if (before != std::stoull(r.expected)) reason = "stale";
++        else if (r.direction == "debit" && before < quantity) reason = "balance";
++        else if (r.direction == "grant" && before + quantity > 2147483646ULL) reason = "cap";
++        else after = r.direction == "grant" ? before + quantity : before - quantity;
++        if (reason.empty())
++        {
++            if (!conn->Execute(("UPDATE characters SET money=" + std::to_string(after) + " WHERE guid=" + r.guid + " AND account=" + r.account + " AND money=" + std::to_string(before) + " AND online=0").c_str())) return Result(r, "unknown");
++            auto check = conn->Query(("SELECT account,money,online FROM characters WHERE guid=" + r.guid + " FOR UPDATE").c_str());
++            if (!check || (*check)[0].GetUInt32() != std::stoull(r.account) || (*check)[1].GetUInt32() != after || (*check)[2].GetUInt32() != 0) return Result(r, "unknown");
++        }
++        std::string state = reason.empty() ? "applied" : "rejected";
++        if (!conn->Execute(("INSERT INTO realm_bridge_receipts(operation_id,payload,state,before_money,after_money,reason) VALUES('" + r.id + "','" + r.Payload() + "','" + state + "'," + std::to_string(before) + "," + std::to_string(after) + ",'" + reason + "')").c_str())) return Result(r, "unknown");
++        if (!conn->CommitTransaction()) return Result(r, "unknown"); transaction = false;
++        if (!FinishFence(conn)) return Result(r, "unknown");
++        completion->known = true; return Result(r, state, std::to_string(before), std::to_string(after), reason);
++    }
++public:
++    Operation(Request r, std::shared_ptr<Completion> c) : request(std::move(r)), completion(std::move(c)) {}
++    bool Execute(SqlConnection* conn) override
++    {
++        SqlConnection::Lock lock(conn);
++        std::string result = Result(request, "unknown");
++        try { result = Run(conn); } catch (...) { completion->known = false; }
++        if (transaction) { conn->RollbackTransaction(); transaction = false; }
++        bool known = completion->known;
++        completion->promise.set_value(result); // shared ownership outlives SOAP/client timeout
++        return known;
++    }
++};
++}
++#endif
