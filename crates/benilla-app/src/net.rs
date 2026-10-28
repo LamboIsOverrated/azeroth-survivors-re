@@ -29,6 +29,8 @@ mod objects;
 mod select_keepalive;
 pub(crate) use objects::tear_down;
 mod session;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_movement_guard;
 mod world;
 
 pub(crate) use apply::apply_net_updates;
@@ -83,9 +85,11 @@ impl Plugin for NetPlugin {
             last_ping: 0.0,
             warned: 0,
         })
+        .init_resource::<web_movement_guard::FrameGate>()
         .add_systems(
             Update,
-            web_writer_pump
+            (web_movement_guard::guard_before_dispatch, web_writer_pump)
+                .chain()
                 .in_set(WorldStage::Net)
                 .before(apply_net_updates),
         );
@@ -205,6 +209,7 @@ pub(crate) struct WebWriter {
 #[cfg(target_arch = "wasm32")]
 fn web_writer_pump(
     mut web: ResMut<WebWriter>,
+    movement_gate: Res<web_movement_guard::FrameGate>,
     time: Res<Time<Real>>,
     ping: Res<PingShared>,
     state: Res<State<crate::char_select::ClientState>>,
@@ -212,6 +217,11 @@ fn web_writer_pump(
     intent: Res<crate::login::LoginIntent>,
 ) {
     let web = &mut *web;
+    if movement_gate.discard_if_blocked(web.cmd_rx.try_iter()) {
+        // The guard closes both sockets before this pump; discard every queued command so no
+        // old pose is stamped as a current report while authoritative re-entry owns the page.
+        return;
+    }
     while let Ok(w) = web.writer_rx.try_recv() {
         web.writer = Some(w);
         web.warned = 0;
