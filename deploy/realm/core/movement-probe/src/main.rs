@@ -83,6 +83,17 @@ struct Step {
     #[serde(default)]
     transport: Option<u64>,
 }
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalClone {
+    service_id: String,
+    database_host: String,
+    database_port: u16,
+    source_database_port: u16,
+    source_prefix: String,
+    schemas: [String; 4],
+    copy_verification_sha256: String,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Fixture {
@@ -91,6 +102,8 @@ struct Fixture {
     auth: String,
     world: String,
     database_prefix: String,
+    #[serde(default)]
+    canonical_clone: Option<CanonicalClone>,
     source_commit: String,
     image_digest: String,
     primary: Identity,
@@ -173,9 +186,29 @@ fn validate(f: &Fixture) -> Result<()> {
             "refusing public or stock endpoint"
         );
     }
+    let namespace_ok = match &f.canonical_clone {
+        None => f.database_prefix.starts_with("movementqa_") && f.database_prefix.len() <= 40,
+        Some(c) => {
+            f.database_prefix == "classic"
+                && c.service_id == "09bb722b-e45b-4b32-923c-9198c8374fa6"
+                && c.database_host == "127.0.0.1"
+                && c.database_port == 13308
+                && c.source_database_port == 13307
+                && c.source_prefix == "movementqa_"
+                && c.schemas
+                    == [
+                        "classicrealmd",
+                        "classiccharacters",
+                        "classicmangos",
+                        "classiclogs",
+                    ]
+                && c.copy_verification_sha256
+                    == "f86d362c8f1187958b43696ed09b80f70c804b2018750821c5ae4cfac64c94ed"
+        }
+    };
     ensure!(
-        f.database_prefix.starts_with("movementqa_") && f.database_prefix.len() <= 40,
-        "disposable schema prefix required"
+        namespace_ok,
+        "unknown or mixed disposable database attestation"
     );
     ensure!(
         f.source_commit.len() == 40 && f.source_commit.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -1045,7 +1078,7 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         begin: Instant::now(),
     };
     evidence.write(json!({"event":"preflight","fixture_sha256":format!("{:x}",Sha256::digest(raw)),"source_commit":f.source_commit,
-        "image_digest":f.image_digest,"auth":f.auth,"world":f.world,"database_prefix":f.database_prefix,
+        "image_digest":f.image_digest,"auth":f.auth,"world":f.world,"database_prefix":f.database_prefix,"canonical_clone":f.canonical_clone,
         "primary":f.primary.user,"observer":f.observer.user,"security_attestation":[f.primary.security,f.observer.security],
         "max_duration_seconds":180,"max_outbound_packets":128,"combat":false,"mode":format!("{mode:?}")}))?;
     // Independent hard bound also covers a stalled OS connect/read during authentication.
@@ -1331,6 +1364,54 @@ mod tests {
         assert!(validate(&f).is_err());
         f.steps[2].wait_knockback_age_ms = Some(61000);
         f.terrain = None;
+        assert!(validate(&f).is_err());
+    }
+    #[test]
+    fn exact_private_canonical_copy_is_explicit_and_never_mixed() {
+        let mut f = fixture();
+        f.database_prefix = "classic".into();
+        f.canonical_clone = Some(CanonicalClone {
+            service_id: "09bb722b-e45b-4b32-923c-9198c8374fa6".into(),
+            database_host: "127.0.0.1".into(),
+            database_port: 13308,
+            source_database_port: 13307,
+            source_prefix: "movementqa_".into(),
+            schemas: [
+                "classicrealmd".into(),
+                "classiccharacters".into(),
+                "classicmangos".into(),
+                "classiclogs".into(),
+            ],
+            copy_verification_sha256:
+                "f86d362c8f1187958b43696ed09b80f70c804b2018750821c5ae4cfac64c94ed".into(),
+        });
+        validate(&f).unwrap();
+        f.canonical_clone.as_mut().unwrap().database_port = 3306;
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().database_port = 13308;
+        f.canonical_clone.as_mut().unwrap().database_host = "realm-db.railway.internal".into();
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().database_host = "127.0.0.1".into();
+        f.canonical_clone.as_mut().unwrap().service_id =
+            "59580eed-3a58-4205-a536-078c4d6b561d".into();
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().service_id =
+            "09bb722b-e45b-4b32-923c-9198c8374fa6".into();
+        f.canonical_clone.as_mut().unwrap().source_database_port = 3306;
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().source_database_port = 13307;
+        f.canonical_clone.as_mut().unwrap().source_prefix = "classic".into();
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().source_prefix = "movementqa_".into();
+        f.canonical_clone.as_mut().unwrap().schemas[1] = "movementqa_characters".into();
+        assert!(validate(&f).is_err());
+        f.canonical_clone.as_mut().unwrap().schemas[1] = "classiccharacters".into();
+        f.database_prefix = "movementqa_".into();
+        assert!(validate(&f).is_err());
+        f.database_prefix = "classic".into();
+        f.canonical_clone.as_mut().unwrap().copy_verification_sha256 = "a".repeat(64);
+        assert!(validate(&f).is_err());
+        f.canonical_clone = None;
         assert!(validate(&f).is_err());
     }
     #[test]

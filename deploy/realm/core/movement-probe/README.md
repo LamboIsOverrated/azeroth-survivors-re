@@ -46,6 +46,30 @@ non-stock ports (for example auth `127.0.0.1:13724`, world `127.0.0.1:18085`),
 and the disposable database prefix `movementqa_`. Loopback alone does not prove
 isolation: the operator must check the tunnel and server configuration.
 
+The separately verified private UI clone uses the actual canonical schema names.
+For **that exact copy only**, `database_prefix: "classic"` requires an explicit
+`canonical_clone` with all these exact values:
+
+```
+service_id: 09bb722b-e45b-4b32-923c-9198c8374fa6
+database_host: 127.0.0.1
+database_port: 13308
+source_database_port: 13307
+source_prefix: movementqa_
+schemas: [classicrealmd, classiccharacters, classicmangos, classiclogs]
+copy_verification_sha256: f86d362c8f1187958b43696ed09b80f70c804b2018750821c5ae4cfac64c94ed
+```
+
+The digest binds the operator's private `ui-canonical-db-copy-proof.json` for all
+269 copied table row/DDL hashes. This is an operator attestation, emitted in the
+preflight; the protocol probe does not connect to SQL or inspect remote service
+configuration. Source and canonical databases remain separate. The legacy
+`movementqa_` form requires no canonical attestation; mixing it with canonical
+metadata fails. Other services, hosts, ports, source names, schema arrays or
+digests fail. Dedicated GM0 identities and literal loopback/non-stock game-port
+restrictions apply identically. Coordinate the actual forward/configuration
+proof with the operator before any canonical UI session.
+
 For fresh accounts, an explicit fixture `create_missing_characters: true`
 permits normal `CMSG_CHAR_CREATE` of only the declared avatar on an empty
 roster: human male warrior, all appearance indices zero. Existing declared
