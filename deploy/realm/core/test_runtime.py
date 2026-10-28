@@ -93,6 +93,69 @@ class RuntimeTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 runtime.settings(env)
 
+    def test_compiled_capability_flags_accept_only_zero_or_one(self):
+        for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED', 'REALM_BRIDGE_TEST_ENABLE'):
+            for value in ('true', '2', '-1', '', 1):
+                env = self.env()
+                env[name] = value
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                    runtime.settings(env)
+
+    def test_test_bridge_enable_requires_bot_free_build_and_never_passes_live_secrets(self):
+        for playerbots, ahbot in (('1','1'), ('0','1'), ('1','0')):
+            with self.subTest(playerbots=playerbots, ahbot=ahbot), self.assertRaisesRegex(ValueError, 'bot-free'):
+                runtime.settings(self.env(CORE_PLAYERBOTS_COMPILED=playerbots,
+                                          CORE_AHBOT_COMPILED=ahbot, REALM_BRIDGE_TEST_ENABLE='1'))
+        env = self.env(CORE_PLAYERBOTS_COMPILED='0', CORE_AHBOT_COMPILED='0',
+                       REALM_BRIDGE_TEST_ENABLE='1', LIVE_SETTLEMENT_ENABLE='1')
+        cfg = runtime.settings(env)
+        options = runtime.game_options(cfg)
+        self.assertEqual(options['env']['REALM_BRIDGE_TEST_ENABLE'], '1')
+        self.assertNotIn('LIVE_SETTLEMENT_ENABLE', options['env'])
+        self.assertNotIn('DB_ROOT_PASSWORD', options['env'])
+        self.assertNotIn('SOAP_ADMIN_PASSWORD', options['env'])
+        self.assertEqual(runtime.game_options(self.env())['env']['REALM_BRIDGE_TEST_ENABLE'], '0')
+
+    def test_bot_off_build_uses_only_core_templates_and_supported_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            templates = root/'templates'
+            templates.mkdir()
+            for name in ('mangosd', 'realmd', 'anticheat'):
+                (templates/(name+'.conf.dist')).write_text('[Config]\n')
+            cfg = runtime.settings(self.env(CORE_PLAYERBOTS_COMPILED='0', CORE_AHBOT_COMPILED='0'))
+            runtime.configure(cfg, root, templates)
+            self.assertFalse((root/'config/aiplayerbot.conf').exists())
+            self.assertFalse((root/'config/ahbot.conf').exists())
+            world = runtime.game_commands(cfg, root)[1]
+            self.assertNotIn('-p', world)
+            self.assertNotIn('-a', world)
+            self.assertEqual(world, ['/opt/mangos/bin/mangosd', '-c', str(root/'config/mangosd.conf')])
+
+    def test_declared_compiled_module_requires_its_template_before_config_writes(self):
+        for missing in ('aiplayerbot', 'ahbot'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                templates = root/'templates'
+                templates.mkdir()
+                for name in ('mangosd', 'realmd', 'anticheat', 'aiplayerbot', 'ahbot'):
+                    if name != missing:
+                        (templates/(name+'.conf.dist')).write_text('[Config]\n')
+                with self.assertRaisesRegex(RuntimeError, missing):
+                    runtime.configure(runtime.settings(self.env()), root, templates)
+                self.assertFalse((root/'config').exists())
+
+    def test_compiled_capability_matrix_preserves_current_base_defaults(self):
+        root = pathlib.Path('/realm-data')
+        for playerbots, ahbot in (('0','0'), ('0','1'), ('1','0'), ('1','1')):
+            cfg = runtime.settings(self.env(CORE_PLAYERBOTS_COMPILED=playerbots, CORE_AHBOT_COMPILED=ahbot))
+            world = runtime.game_commands(cfg, root)[1]
+            self.assertEqual('-p' in world, playerbots == '1')
+            self.assertEqual('-a' in world, ahbot == '1')
+        defaults = runtime.settings(self.env())
+        self.assertEqual(defaults['CORE_PLAYERBOTS_COMPILED'], '1')
+        self.assertEqual(defaults['CORE_AHBOT_COMPILED'], '1')
+
     def test_config_forces_pvp_private_ports_and_bots_off_on_every_boot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

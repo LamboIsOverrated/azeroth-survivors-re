@@ -63,3 +63,24 @@ all these content identities and is verified on repeat runs and restores.
 The initial manual operator overlay's 9,597,162-byte container differs only in
 metadata and remains distinct from the reproducible normalized profile; its
 restored ADT has the same independently verified full-entry hash.
+
+## Separate future bot-free bridge image
+
+`Dockerfile.bridge` builds the exact same core revision after the reviewed
+`deploy/realm/bridge/core/world-bridge.patch` is checked against its pinned input
+file hashes. Current/deprecated PlayerBots and AH bot compile features are OFF.
+Only the newly built `mangosd` and `realmd` replace the immutable companion
+image's binaries; its same-revision extractors and resources are retained.
+Image capability metadata makes the wrapper omit unavailable module templates
+and CLI flags, while the normal image retains its original capabilities.
+
+The future image includes the complete already-patched upstream/submodule code
+in `/opt/railway-core/source/cmangos-bridge-source.tar.gz`, the source patch and
+manifest, its application tool and the build recipe for corresponding-source
+redistribution. The recipe uses a Dockerfile-specific source allowlist, following
+[Docker's context documentation](https://docs.docker.com/build/concepts/context/#filename-and-location),
+without changing the repository's root ignore file or including any assets.
+SQL migration remains manual, TEST enablement defaults to zero, and no LIVE
+settlement setting is forwarded. Full source/image build and real database fault
+acceptance are mandatory before deployment; portable configuration tests alone
+do not confirm the new image has been built or is safe to activate.

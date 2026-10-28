@@ -1,0 +1,19 @@
+# BuildKit Dockerfile-specific allowlist. Root .dockerignore remains unchanged.
+**
+!deploy/
+!deploy/realm/
+!deploy/realm/core/
+!deploy/realm/core/Dockerfile.bridge
+!deploy/realm/core/runtime.py
+!deploy/realm/core/smoke_runtime.py
+!deploy/realm/core/adt_repair.py
+!deploy/realm/core/repair_client.py
+!deploy/realm/core/upstreams.env
+!deploy/realm/core/PROVENANCE.md
+!deploy/realm/bridge/
+!deploy/realm/bridge/core/
+!deploy/realm/bridge/core/world-bridge.patch
+!deploy/realm/bridge/core/pinned-sources.json
+!deploy/realm/bridge/core/001-world-bridge.sql
+!deploy/realm/bridge/tools/
+!deploy/realm/bridge/tools/apply-patch.mjs

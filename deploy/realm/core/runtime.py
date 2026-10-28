@@ -22,8 +22,23 @@ STOP = threading.Event()
 CHILDREN = []
 
 
+def compiled_capabilities(env):
+    capabilities = {}
+    for name, default in [('CORE_PLAYERBOTS_COMPILED', '1'), ('CORE_AHBOT_COMPILED', '1'),
+                          ('REALM_BRIDGE_TEST_ENABLE', '0')]:
+        value = env.get(name, default)
+        if value not in ('0', '1'):
+            raise ValueError(name + ' must be 0 or 1')
+        capabilities[name] = value
+    if capabilities['REALM_BRIDGE_TEST_ENABLE'] == '1' and any(
+            capabilities[name] != '0' for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED')):
+        raise ValueError('REALM_BRIDGE_TEST_ENABLE requires a declared bot-free compiled build')
+    return capabilities
+
+
 def settings(env):
     cfg = dict(env)
+    cfg.update(compiled_capabilities(env))
     for key in ('DB_ROOT_PASSWORD', 'DB_MANGOS_PASSWORD', 'DB_REALMWEB_PASSWORD'):
         if not re.fullmatch(r'[A-Za-z0-9_-]{12,128}', cfg.get(key, '')):
             raise ValueError(key + ' must be 12-128 alphanumeric/_/- characters')
@@ -66,6 +81,7 @@ def replace_config(template, values):
 
 
 def configure(cfg, root, templates=Path('/opt/mangos/etc')):
+    capabilities = compiled_capabilities(cfg)
     connection = f'{cfg["DB_HOST"]};{cfg["DB_PORT"]};mangos;{cfg["DB_MANGOS_PASSWORD"]}'
     common = {'LogsDir': f'"{root}/logs"'}
     values = {
@@ -80,6 +96,14 @@ def configure(cfg, root, templates=Path('/opt/mangos/etc')):
         'aiplayerbot': {'AiPlayerbot.Enabled': 0, 'AiPlayerbot.MinRandomBots': 0, 'AiPlayerbot.MaxRandomBots': 0,
                        'AiPlayerbot.RandomBotAutologin': 0},
         'anticheat': {'Enable': 0}}
+    for flag, name in [('CORE_PLAYERBOTS_COMPILED', 'aiplayerbot'), ('CORE_AHBOT_COMPILED', 'ahbot')]:
+        if capabilities[flag] == '0':
+            del values[name]
+    # Validate the declared image capabilities before changing any existing
+    # configuration. A missing compiled-module template is an image error.
+    for name in values:
+        if not (templates / (name + '.conf.dist')).is_file():
+            raise RuntimeError('Required compiled configuration template missing: ' + name + '.conf.dist')
     for name, updates in values.items():
         template = templates / (name + '.conf.dist')
         write_private(root / 'config' / (name + '.conf'), replace_config(template.read_text(), updates))
@@ -286,7 +310,18 @@ def game_options(env):
     # migration, web database, SOAP operator or unrelated deployment secrets.
     clean = {key: env[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ', 'LD_LIBRARY_PATH') if key in env}
     clean['HOME'] = '/home/mangos'
+    clean['REALM_BRIDGE_TEST_ENABLE'] = compiled_capabilities(env)['REALM_BRIDGE_TEST_ENABLE']
     return dict(env=clean, user=10001, group=10001, extra_groups=[], start_new_session=True)
+
+
+def game_commands(cfg, root):
+    capabilities = compiled_capabilities(cfg)
+    world = ['/opt/mangos/bin/mangosd', '-c', str(root / 'config/mangosd.conf')]
+    if capabilities['CORE_AHBOT_COMPILED'] == '1':
+        world += ['-a', str(root / 'config/ahbot.conf')]
+    if capabilities['CORE_PLAYERBOTS_COMPILED'] == '1':
+        world += ['-p', str(root / 'config/aiplayerbot.conf')]
+    return [['/opt/mangos/bin/realmd', '-c', str(root / 'config/realmd.conf')], world]
 
 
 def prepare_game_permissions(root):
@@ -392,9 +427,7 @@ def main():
         STATE['data'] = True
         STATE['phase'] = 'world-starting'
         prepare_game_permissions(root)
-        for command in [['/opt/mangos/bin/realmd', '-c', str(root / 'config/realmd.conf')],
-                        ['/opt/mangos/bin/mangosd', '-c', str(root / 'config/mangosd.conf'),
-                         '-a', str(root / 'config/ahbot.conf'), '-p', str(root / 'config/aiplayerbot.conf')]]:
+        for command in game_commands(cfg, root):
             CHILDREN.append(subprocess.Popen(command, cwd='/opt/mangos/bin', **game_options(os.environ)))
         while not STOP.wait(2):
             if any(p.poll() is not None for p in CHILDREN):

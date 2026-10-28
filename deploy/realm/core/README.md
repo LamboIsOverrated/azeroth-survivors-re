@@ -21,6 +21,13 @@ Required environment:
 - `PORT`: status listener, default 8080. `EXTRACT_THREADS`: default 2, max 64.
 - `REALM_MAINTENANCE`: `1` starts only the Python status wrapper; default `0`
   starts the normal realm. Other values are rejected before initialization.
+- `CORE_PLAYERBOTS_COMPILED`, `CORE_AHBOT_COMPILED`: image capability metadata,
+  each exactly `0` or `1`. Both default to `1` for the existing pinned companion
+  binary. They describe compile options, and do not enable bot gameplay.
+- `REALM_BRIDGE_TEST_ENABLE`: exactly `0` or `1`, default `0`. Explicit TEST
+  enablement is accepted only when both compiled bot capabilities are `0`.
+  Only this validated TEST switch is forwarded to the game; root database,
+  SOAP operator and LIVE settlement variables remain absent from game children.
 
 The web service must use the same SOAP credentials against private port 7878,
 and `realmweb` plus `DB_REALMWEB_PASSWORD` for read-only auth/character queries.
@@ -136,3 +143,52 @@ content but different container metadata; it is not accepted as this normalized
 profile. Migrate such input into a new directory during planned maintenance,
 without changing an active extractor's fingerprint. Source hashes and entry
 proof are metadata only; no game content is in Git.
+
+## Future bot-free bridge image: not deployed or activated
+
+The ordinary standalone `Dockerfile` keeps the pinned companion image's compiled
+module capabilities. With capability `1`, the matching module template must
+exist before any configuration is written, and the matching `-p` or `-a` option
+is passed. A missing declared module template fails closed. With capability `0`,
+the template is optional, no module configuration is generated, and its option
+is omitted. Existing module settings always keep bots disabled.
+
+A future reviewed bridge image has a separate repository-root build context:
+
+```sh
+docker build -f deploy/realm/core/Dockerfile.bridge -t realm-core-bridge:test .
+```
+
+Its Dockerfile-specific allowlist includes only named source, patch and metadata
+files; the repository root `.dockerignore` is untouched. The build checks the
+exact core revision and bridge source hashes before applying the source patch,
+compiles auth/world with current and deprecated PlayerBots and AH bot support
+OFF, then layers only `realmd` and `mangosd` over the immutable companion base.
+The pinned extractors, their format versions, SQL and Classic DB remain in place.
+Image metadata sets both bot capabilities to `0` and TEST enablement to `0`.
+
+The image build runs `smoke_runtime.py`: generated runtime arguments are parsed
+by the actual new `mangosd`/`realmd` binaries using `--help`, compiled PlayerBots
+support is checked against the declaration, optional module configuration is
+checked, and a real Linux maintenance process must have no child processes and
+serve maintenance/503 readiness. These checks require no SQL or game assets.
+For source CI outside the image, set `CORE_PLAYERBOTS_COMPILED=0` and
+`CORE_AHBOT_COMPILED=0`, install the CMake build to scratch, and set
+`CORE_SMOKE_MANGOSD`, `CORE_SMOKE_REALMD`, `CORE_SMOKE_TEMPLATES` to that install
+before running `python3 deploy/realm/core/smoke_runtime.py`.
+
+The image contains a complete already-patched core/submodule source archive at
+`/opt/railway-core/source/cmangos-bridge-source.tar.gz`, the exact patch and
+pinned-input manifest, and this build recipe. To rebuild the included source,
+unpack it and run the recipe's CMake configure/build/install commands without
+reapplying the already included patch. Preserve upstream GPL source and license
+material when redistributing binaries. No client assets or credentials enter
+the build context or source archive.
+
+**Do not deploy this image from compilation alone.** The reviewed bridge schema
+migration at `/opt/railway-core/source/bridge/core/001-world-bridge.sql` must be
+installed manually during maintenance; missing bridge tables intentionally deny
+logins in the patched core. Real MariaDB commit/disconnect/restart, queue drain,
+login-race and account-isolation acceptance remain required. TEST enablement is
+a separate explicit operator action only after those checks and whole-realm
+quiescence; this package never turns it on automatically and passes no LIVE flag.
