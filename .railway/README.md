@@ -10,6 +10,8 @@ Install the pinned SDK with `npm ci` at the repository root. Link the existing p
 
 Secrets use `preserve()` and are never placed in Git. The public runtime URL and SHA256 also preserve their already configured release values; publishing a new Rust client/account binary requires updating those two values together deliberately. Changing the gateway branch alone does not replace the pinned native binary. Web image builds verify the digest before extracting the code bundle. Game MPQs are private volume inputs and are never included in a release or source commit.
 
+`REALM_TRANSPORT_PROFILE` preserves the deployed client's explicit server compatibility setting. The verified `8d45629` Rust/WASM pair supports `cmangos-classic-4d230bb1`; set it together with that pair's release URL and SHA256. The older `a3ff560` pair does not support this setting. Preserve the previous pair and environment for rollback, and verify actual browser entry after rollout.
+
 `/healthz` proves the wrapper is running; `/readyz` requires the account database, game files, SQL, SOAP and world listeners. During `REALM_MAINTENANCE=1`, wrappers remain available for recovery but gameplay and account writers stop. Maintenance state is an operator-controlled environment setting and is intentionally not reset by this file. See [the recovery runbook](../docs/REALM-OPERATIONS.md) before capture or restore.
 
 The token mint is absent and real transfer flags are off. A validated CA, reconciled treasury, signer operations, backed game issuance and reviewed world escrow are separate activation requirements. Do not use a token address or an infrastructure apply to bypass those gates.
