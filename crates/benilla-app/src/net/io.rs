@@ -602,9 +602,11 @@ async fn run(
         }
 
         // Park at character select until the app answers. Create and delete are serviced in place.
-        // If the server kicked the parked socket meanwhile, the login below fails, the cycle
-        // restarts and the app re-sends its pick, so the park needs no keepalive.
+        // The browser pumps the ordinary 30s keepalive through this park: its relay has an
+        // idle deadline, and post-roster socket loss deliberately does not retake an account.
         bevy::log::info!("net: parked at character select");
+        #[cfg(any(target_arch = "wasm32", test))]
+        let mut parked_ping_sequence = 0u32;
         let guid = loop {
             // Two channels, one park: `RealmList.xml` is a `frameStrata="DIALOG"` frame, so Change
             // Realm raises it over character select and both must be served while it is open.
@@ -656,6 +658,12 @@ async fn run(
                 },
                 Fired::Pick(pick) => match pick {
                     Err(_) => Parked::Exit,
+                    #[cfg(any(target_arch = "wasm32", test))]
+                    Ok(CharRequest::KeepAlive) => {
+                        parked_ping_sequence = parked_ping_sequence.wrapping_add(1);
+                        session.ping(parked_ping_sequence, 0)?;
+                        Parked::StayPut
+                    }
                     Ok(CharRequest::Enter(guid)) => Parked::Play(guid),
                     // Select's Back: drop the parked session, return to the login park.
                     Ok(CharRequest::Abandon) => Parked::Repark,

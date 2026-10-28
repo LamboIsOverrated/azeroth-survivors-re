@@ -363,6 +363,12 @@ impl WorldSession {
         self.send(opcode::CMSG_PLAYER_LOGIN, &messages::full_guid(guid))
     }
 
+    /// The ordinary connection keepalive before the world socket is split for streaming.
+    /// Character select/create still own an authenticated world connection.
+    pub fn ping(&mut self, sequence: u32, last_rtt_ms: u32) -> Result<()> {
+        self.send(opcode::CMSG_PING, &messages::ping(sequence, last_rtt_ms))
+    }
+
     /// Declare the unit we move, as the 1.12 client does at login; vmangos drops moves until then.
     pub fn set_active_mover(&mut self, guid: u64) -> Result<()> {
         self.send(opcode::CMSG_SET_ACTIVE_MOVER, &messages::full_guid(guid))
@@ -855,7 +861,10 @@ impl WorldSession {
         self.conn
             .set_read_timeout(None)
             .context("clearing handshake read timeout")?;
-        let (reader, writer) = self.conn.split().context("splitting the world connection")?;
+        let (reader, writer) = self
+            .conn
+            .split()
+            .context("splitting the world connection")?;
         let (encrypter, decrypter) = self.crypto.split();
         Ok((
             WorldReader { reader, decrypter },

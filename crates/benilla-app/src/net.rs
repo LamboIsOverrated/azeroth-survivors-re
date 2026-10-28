@@ -25,6 +25,8 @@ pub(crate) mod handlers;
 pub(crate) mod io;
 mod motion;
 mod objects;
+#[cfg(target_arch = "wasm32")]
+mod select_keepalive;
 pub(crate) use objects::tear_down;
 mod session;
 mod world;
@@ -201,7 +203,14 @@ pub(crate) struct WebWriter {
 /// Adopt a freshly-connected writer, drain the frame's commands through it, and keep the 30 s
 /// keepalive going — the web's `writer_loop`, once per frame instead of once per `select!`.
 #[cfg(target_arch = "wasm32")]
-fn web_writer_pump(mut web: ResMut<WebWriter>, time: Res<Time>, ping: Res<PingShared>) {
+fn web_writer_pump(
+    mut web: ResMut<WebWriter>,
+    time: Res<Time<Real>>,
+    ping: Res<PingShared>,
+    state: Res<State<crate::char_select::ClientState>>,
+    pick: Res<CharPick>,
+    intent: Res<crate::login::LoginIntent>,
+) {
     let web = &mut *web;
     while let Ok(w) = web.writer_rx.try_recv() {
         web.writer = Some(w);
@@ -210,6 +219,21 @@ fn web_writer_pump(mut web: ResMut<WebWriter>, time: Res<Time>, ping: Res<PingSh
         // A fresh connection restarts the keepalive from scratch, like the real client: sequence 1
         // is the new socket's first ping, and a stale pong from the old one can no longer match.
         *ping.0.lock().expect("ping clock") = io::PingClock::default();
+    }
+    // Before the writer handover the IO task still owns the unsplit socket. Keep it alive
+    // through its park channel; an initial login has no socket, so it must queue nothing.
+    if select_keepalive::due(
+        intent.has_authenticated_roster()
+            && matches!(
+                state.get(),
+                crate::char_select::ClientState::CharSelect
+                    | crate::char_select::ClientState::CharCreate
+            ),
+        time.elapsed_secs_f64(),
+        &mut web.last_ping,
+        io::PING_INTERVAL.as_secs_f64(),
+    ) {
+        let _ = pick.0.try_send(CharRequest::KeepAlive);
     }
     let Some(writer) = web.writer.as_mut() else {
         // No live writer: the session is gone and these commands evaporate — the same answer the
@@ -471,6 +495,9 @@ pub(crate) struct CharPick(pub(crate) async_channel::Sender<CharRequest>);
 
 /// One request to the IO thread parked at character select.
 pub(crate) enum CharRequest {
+    /// Browser keepalive while the unsplit world connection is parked at select/create.
+    #[cfg(any(target_arch = "wasm32", test))]
+    KeepAlive,
     /// Log in as this character (`CMSG_PLAYER_LOGIN`).
     Enter(u64),
     /// Create a character (`CMSG_CHAR_CREATE`), then stay parked at select with the fresh roster.

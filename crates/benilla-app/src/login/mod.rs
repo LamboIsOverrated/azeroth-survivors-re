@@ -125,6 +125,13 @@ pub(crate) struct LoginIntent {
 }
 
 impl LoginIntent {
+    /// A roster has arrived for this connection. A logout relist can still show select while
+    /// auth is retrying, so the screen alone must not queue pings at the pre-login park.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn has_authenticated_roster(&self) -> bool {
+        self.park == IoPark::Active && !self.in_flight
+    }
+
     /// Forget the session's credentials and any scheduled retry.
     pub(crate) fn clear(&mut self) {
         self.creds = None;
