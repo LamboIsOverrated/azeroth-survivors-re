@@ -74,9 +74,9 @@ test('finalized status alone and foreign raw bytes cannot settle or release; exa
  const f=await withdrawalFixture(t);await reserve(f.k);const signed=await f.k.prepareWithdrawal(1,'withdraw1');
  f.deps.rpc.statuses.set(signed.signature,{slot:160,err:null,confirmationStatus:'finalized'});f.deps.rpc.slot=170;
  await f.k.reconcileWithdrawal(1,'withdraw1');assert.equal(f.k.withdrawal(1,'withdraw1').state,'signed');
- const failed=finalized(f.deps,signed,{err:{InstructionError:[0,'failed']}});failed.transaction[0]=failed.transaction[0].slice(0,-4)+'AAAA';
+ const failed=finalized(f.deps,signed,{err:{InstructionError:[0,'InsufficientFunds']}});failed.transaction[0]=failed.transaction[0].slice(0,-4)+'AAAA';
  await f.k.reconcileWithdrawal(1,'withdraw1');assert.equal(f.k.balance(1).vaultAtoms,'9000');assert.equal(f.k.withdrawal(1,'withdraw1').state,'signed');
- finalized(f.deps,signed,{err:{InstructionError:[0,'failed']}});await Promise.all([f.k.reconcileWithdrawal(1,'withdraw1'),f.k.reconcileWithdrawal(1,'withdraw1')]);
+ finalized(f.deps,signed,{err:{InstructionError:[0,'InsufficientFunds']}});await Promise.all([f.k.reconcileWithdrawal(1,'withdraw1'),f.k.reconcileWithdrawal(1,'withdraw1')]);
  assert.equal(f.k.withdrawal(1,'withdraw1').state,'failed');assert.equal(f.k.balance(1).vaultAtoms,'10000');assert.equal(f.k.totals().reserveAtoms,'10000');
 });
 

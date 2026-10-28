@@ -1,10 +1,10 @@
 import {account,identifier,positive,atoms,canonical,hash} from './amounts.mjs';
 import {address,signingAddress,safeInteger,decodeMint,decodeTokenAccount,transferTransaction,signedTransaction,signatureOf,verifyDepositReceipt} from '../../economy/settlement/protocol.mjs';
+import {validTransactionError} from './transaction-errors.mjs';
 
 const FORMAT='withdrawal-v1';
 const terminal=new Set(['settled','failed','expired']);
 const stages=['withdrawal-reserve','withdrawal-prepared','withdrawal-signed','withdrawal-pending','withdrawal-settled','withdrawal-failed','withdrawal-expired'];
-function validError(value){return value===null||typeof value==='string'&&value.length>0||value&&Object.getPrototypeOf(value)===Object.prototype;}
 
 // Injected private adapters only. A signer returns bytes; it MUST NOT submit them.
 export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
@@ -69,11 +69,12 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
   return saved;
  }
  function duplicate(row,request,wallet){const op=JSON.parse(row.payload);if(row.account_id!==request.accountId||op.format!==FORMAT||canonical(op.request)!==canonical(request)||op.wallet!==wallet)throw Error('Withdrawal idempotency conflict');return view(row);}
- async function status(provider,signature,minSlot){
-  const result=await provider.call('getSignatureStatuses',[[signature],{searchTransactionHistory:true}]);
+ function errorContext(saved){const tx=signedTransaction(Buffer.from(saved.signedTransaction,'base64'));return {instructionCount:tx.instructions.length,accountCount:tx.compileMessage().accountKeys.length};}
+ async function status(provider,saved,minSlot){
+  const result=await provider.call('getSignatureStatuses',[[saved.signature],{searchTransactionHistory:true}]);
   if(safeInteger(result?.context?.slot)<minSlot||!Array.isArray(result.value)||result.value.length!==1)throw Error('Invalid/stale withdrawal signature status');
   const value=result.value[0];
-  if(value!==null&&(safeInteger(value?.slot)<minSlot||value.slot>result.context.slot||!['processed','confirmed','finalized'].includes(value.confirmationStatus)||!Object.hasOwn(value,'err')||!validError(value.err)))throw Error('Malformed withdrawal status');
+  if(value!==null&&(safeInteger(value?.slot)<minSlot||value.slot>result.context.slot||!['processed','confirmed','finalized'].includes(value.confirmationStatus)||!Object.hasOwn(value,'err')||!validTransactionError(value.err,errorContext(saved))))throw Error('Malformed withdrawal status');
   return {value,slot:result.context.slot};
  }
  async function expiry(provider,saved,minSlot){
@@ -82,7 +83,7 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
   const validity=await provider.call('isBlockhashValid',[saved.blockhash,{commitment:'finalized',minContextSlot:minSlot}]);
   if(safeInteger(validity?.context?.slot)<minSlot||validity.value!==false)return null;
   const first=safeInteger(await provider.call('getFirstAvailableBlock',[]));if(first>saved.blockhashSlot)return null;
-  const signature=await status(provider,saved.signature,validity.context.slot);if(signature.value!==null)return null;
+  const signature=await status(provider,saved,validity.context.slot);if(signature.value!==null)return null;
   const receipt=await provider.call('getTransaction',[saved.signature,{encoding:'base64',commitment:'finalized',maxSupportedTransactionVersion:0}]);
   return receipt===null?{sourceId:provider.sourceId,height,firstAvailableBlock:first,observedSlot:signature.slot,blockhashValid:false,status:null,transaction:null}:null;
  }
@@ -96,10 +97,24 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
  }
  async function finalizedProof(op,saved,observed){
   const receipt=await rpc.call('getTransaction',[saved.signature,{encoding:'base64',commitment:'finalized',maxSupportedTransactionVersion:0}]);
-  if(!receipt||receipt.version!=='legacy'||!Array.isArray(receipt.transaction)||receipt.transaction.length!==2||receipt.transaction[0]!==saved.signedTransaction||receipt.transaction[1]!=='base64'||safeInteger(receipt.slot)!==observed.value.slot||safeInteger(receipt.blockTime*1000)<0||!receipt.meta||canonical(receipt.meta.err)!==canonical(observed.value.err))throw Error('Exact finalized raw withdrawal proof required');
+  if(!receipt||receipt.version!=='legacy'||!Array.isArray(receipt.transaction)||receipt.transaction.length!==2||receipt.transaction[0]!==saved.signedTransaction||receipt.transaction[1]!=='base64'||safeInteger(receipt.slot)!==observed.value.slot||safeInteger(receipt.blockTime*1000)<0||!receipt.meta||!validTransactionError(receipt.meta.err,errorContext(saved))||canonical(receipt.meta.err)!==canonical(observed.value.err))throw Error('Exact finalized raw withdrawal proof required');
   if(receipt.meta.err===null)verifyDepositReceipt({receipt,signature:saved.signature,intent:{wallet:cfg.treasuryWallet,sourceTokenAccount:cfg.treasuryTokenAccount,atoms:op.request.atoms,memo:op.memo,createdSlot:saved.blockhashSlot,expiresAt:Number.MAX_SAFE_INTEGER},config:{...cfg,treasuryWallet:op.wallet,treasuryTokenAccount:op.request.destinationTokenAccount}});
-  const chainReceipt=structuredClone({slot:receipt.slot,blockTime:receipt.blockTime,version:'legacy',transaction:receipt.transaction,meta:receipt.meta.err===null?{err:null,innerInstructions:receipt.meta.innerInstructions,preTokenBalances:receipt.meta.preTokenBalances,postTokenBalances:receipt.meta.postTokenBalances}:{err:receipt.meta.err}});
+  else unchangedTokenBalances(receipt,op,saved);
+  const chainReceipt=structuredClone({slot:receipt.slot,blockTime:receipt.blockTime,version:'legacy',transaction:receipt.transaction,meta:{err:receipt.meta.err,preTokenBalances:receipt.meta.preTokenBalances,postTokenBalances:receipt.meta.postTokenBalances,...(receipt.meta.err===null?{innerInstructions:receipt.meta.innerInstructions}:{})}});
   return {state:receipt.meta.err===null?'settled':'failed',slot:receipt.slot,observedSlot:observed.slot,sourceId:rpc.sourceId,receiptHash:hash(chainReceipt),chainReceipt};
+ }
+ function unchangedTokenBalances(receipt,op,saved){
+  const keys=signedTransaction(Buffer.from(saved.signedTransaction,'base64')).compileMessage().accountKeys.map(key=>key.toBase58());
+  function balances(rows){
+   if(!Array.isArray(rows)||rows.length!==2)throw Error('Complete no-change token balances required for failure');const values=new Map();
+   for(const row of rows){
+    const key=keys[safeInteger(row.accountIndex)],owner=key===cfg.treasuryTokenAccount?cfg.treasuryWallet:key===op.request.destinationTokenAccount?op.wallet:null;
+    if(!owner||values.has(key)||row.owner!==owner||row.mint!==cfg.mint||row.programId!==cfg.tokenProgram||row.uiTokenAmount?.decimals!==cfg.decimals)throw Error('Failure token ownership/mint/program mismatch');values.set(key,atoms(row.uiTokenAmount.amount));
+   }
+   return values;
+  }
+  const before=balances(receipt.meta.preTokenBalances),after=balances(receipt.meta.postTokenBalances);
+  for(const [key,value]of before)if(after.get(key)!==value)throw Error('Claimed failure contradicts token movement');
  }
  return {
   withdrawal(accountId,id){return view(owned(accountId,id));},
@@ -164,7 +179,7 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
    const row=owned(accountId,id);if(row.state==='complete'||row.state==='reserved')return view(row);
    let result;const op=JSON.parse(row.payload),saved=signedProof(row);
    try{
-    adapters();await network();const observed=await status(rpc,saved.signature,saved.blockhashSlot);
+    adapters();await network();const observed=await status(rpc,saved,saved.blockhashSlot);
     if(observed.value?.confirmationStatus==='finalized')result=await finalizedProof(op,saved,observed);
     else if(observed.value===null){const minimum=Math.max(saved.blockhashSlot,floor()),primary=await expiry(rpc,saved,minimum),archive=primary&&await expiry(archiveRpc,saved,minimum);if(primary&&archive){const complete=await completeness(saved,{height:Math.max(primary.height,archive.height),observedSlot:Math.max(primary.observedSlot,archive.observedSlot)});result={state:'expired',observedSlot:Math.max(primary.observedSlot,archive.observedSlot,complete.finalizedSlot),witnesses:[primary,archive],completenessWitness:complete};}}
    }catch{return view(owned(accountId,id));}
