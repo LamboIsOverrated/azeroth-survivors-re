@@ -49,6 +49,8 @@ jobs:
         run: cargo test --locked -p wenilla-realm
       - name: parked browser connection and session-loss checks
         run: cargo test --locked --manifest-path crates/benilla-app/tests/io-fixture/Cargo.toml
+      - name: isolated movement probe safety checks
+        run: cargo test --locked --manifest-path deploy/realm/core/movement-probe/Cargo.toml
       - name: realm formatting
         run: cargo fmt -p wenilla-realm -p wenilla -- --check
   build-mmo:

@@ -1,0 +1,436 @@
+{
+  "schema": 1,
+  "revision": "de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "status": "integration-required-no-runtime-authorization",
+  "event_sites": [
+    {
+      "path": "src/game/AI/ScriptDevAI/scripts/world/npc_professions.cpp",
+      "line": 566,
+      "symbol": "ModifyMoney",
+      "family": "profession-unlearn",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/AI/ScriptDevAI/scripts/world/npc_professions.cpp",
+      "line": 586,
+      "symbol": "ModifyMoney",
+      "family": "profession-unlearn",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/AI/ScriptDevAI/scripts/world/npc_professions.cpp",
+      "line": 606,
+      "symbol": "ModifyMoney",
+      "family": "profession-unlearn",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseHandler.cpp",
+      "line": 161,
+      "symbol": "SetMoney",
+      "family": "auction-mail-refund",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseHandler.cpp",
+      "line": 186,
+      "symbol": "SetMoney",
+      "family": "auction-mail-refund",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseHandler.cpp",
+      "line": 317,
+      "symbol": "ModifyMoney",
+      "family": "auction-list-cancel",
+      "required_policy": "escrow-plus-sink"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseHandler.cpp",
+      "line": 447,
+      "symbol": "ModifyMoney",
+      "family": "auction-list-cancel",
+      "required_policy": "escrow-plus-sink"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseMgr.cpp",
+      "line": 202,
+      "symbol": "SetMoney",
+      "family": "auction-sale-proceeds",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseMgr.cpp",
+      "line": 788,
+      "symbol": "ModifyMoney",
+      "family": "auction-bid",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/AuctionHouse/AuctionHouseMgr.cpp",
+      "line": 793,
+      "symbol": "ModifyMoney",
+      "family": "auction-bid",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/Chat/Level1.cpp",
+      "line": 1211,
+      "symbol": "SetMoney",
+      "family": "gm-money",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/Chat/Level1.cpp",
+      "line": 1221,
+      "symbol": "SetMoney",
+      "family": "gm-money",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/Chat/Level1.cpp",
+      "line": 1231,
+      "symbol": "SetMoney",
+      "family": "gm-money",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/Chat/Level1.cpp",
+      "line": 1233,
+      "symbol": "ModifyMoney",
+      "family": "gm-money",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/Chat/Level3.cpp",
+      "line": 4883,
+      "symbol": "ModifyMoney",
+      "family": "gm-quest-complete",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/Chat/Level3.cpp",
+      "line": 6491,
+      "symbol": "SetMoney",
+      "family": "gm-mail-money",
+      "required_policy": "deny-or-explicit-funded-admin-event"
+    },
+    {
+      "path": "src/game/DBScripts/ScriptMgr.cpp",
+      "line": 2842,
+      "symbol": "SetMoney",
+      "family": "db-script-mail",
+      "required_policy": "funded-issue"
+    },
+    {
+      "path": "src/game/Entities/ItemHandler.cpp",
+      "line": 591,
+      "symbol": "ModifyMoney",
+      "family": "vendor-sell",
+      "required_policy": "funded-issue"
+    },
+    {
+      "path": "src/game/Entities/ItemHandler.cpp",
+      "line": 624,
+      "symbol": "ModifyMoney",
+      "family": "vendor-buyback",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/ItemHandler.cpp",
+      "line": 917,
+      "symbol": "ModifyMoney",
+      "family": "bank-slot",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/NPCHandler.cpp",
+      "line": 294,
+      "symbol": "ModifyMoney",
+      "family": "trainer",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/NPCHandler.cpp",
+      "line": 862,
+      "symbol": "ModifyMoney",
+      "family": "stable-slot",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/PetHandler.cpp",
+      "line": 708,
+      "symbol": "ModifyMoney",
+      "family": "pet-unlearn",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/PetitionsHandler.cpp",
+      "line": 136,
+      "symbol": "ModifyMoney",
+      "family": "petition",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 3791,
+      "symbol": "ModifyMoney",
+      "family": "talent-reset",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 4138,
+      "symbol": "SetMoney",
+      "family": "character-delete-mail-return",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 4685,
+      "symbol": "ModifyMoney",
+      "family": "repair",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 11880,
+      "symbol": "ModifyMoney",
+      "family": "playerbot-hire",
+      "required_policy": "disabled-bot-path"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 12599,
+      "symbol": "ModifyMoney",
+      "family": "quest-reward",
+      "required_policy": "funded-issue-or-sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 12602,
+      "symbol": "ModifyMoney",
+      "family": "quest-reward",
+      "required_policy": "funded-issue-or-sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 14069,
+      "symbol": "SetMoney",
+      "family": "character-load",
+      "required_policy": "validate-existing-backed-snapshot"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 17344,
+      "symbol": "ModifyMoney",
+      "family": "taxi-route",
+      "required_policy": "reserved-sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 17359,
+      "symbol": "ModifyMoney",
+      "family": "taxi-route",
+      "required_policy": "reserved-sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 17574,
+      "symbol": "ModifyMoney",
+      "family": "vendor-buy",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 17594,
+      "symbol": "ModifyMoney",
+      "family": "vendor-buy",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Guilds/GuildHandler.cpp",
+      "line": 757,
+      "symbol": "ModifyMoney",
+      "family": "guild-emblem",
+      "required_policy": "sink"
+    },
+    {
+      "path": "src/game/Loot/LootMgr.cpp",
+      "line": 2263,
+      "symbol": "ModifyMoney",
+      "family": "loot",
+      "required_policy": "funded-issue"
+    },
+    {
+      "path": "src/game/Loot/LootMgr.cpp",
+      "line": 2273,
+      "symbol": "ModifyMoney",
+      "family": "loot",
+      "required_policy": "funded-issue"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 217,
+      "symbol": "ModifyMoney",
+      "family": "mail-send",
+      "required_policy": "conserved-escrow-transfer-plus-postage-sink"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 219,
+      "symbol": "ModifyMoney",
+      "family": "mail-send",
+      "required_policy": "conserved-escrow-transfer-plus-postage-sink"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 262,
+      "symbol": "SetMoney",
+      "family": "mail-send",
+      "required_policy": "conserved-escrow-transfer-plus-postage-sink"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 394,
+      "symbol": "SetMoney",
+      "family": "mail-return",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 475,
+      "symbol": "SetMoney",
+      "family": "mail-cod",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 479,
+      "symbol": "ModifyMoney",
+      "family": "mail-cod",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/Mails/MailHandler.cpp",
+      "line": 523,
+      "symbol": "ModifyMoney",
+      "family": "mail-take-money",
+      "required_policy": "conserved-escrow-transfer"
+    },
+    {
+      "path": "src/game/PlayerBot/Base/PlayerbotAI.cpp",
+      "line": 4671,
+      "symbol": "ModifyMoney",
+      "family": "playerbot-money",
+      "required_policy": "disabled-bot-path"
+    },
+    {
+      "path": "src/game/PlayerBot/Base/PlayerbotAI.cpp",
+      "line": 5929,
+      "symbol": "ModifyMoney",
+      "family": "playerbot-money",
+      "required_policy": "disabled-bot-path"
+    },
+    {
+      "path": "src/game/PlayerBot/Base/PlayerbotAI.cpp",
+      "line": 6347,
+      "symbol": "ModifyMoney",
+      "family": "playerbot-money",
+      "required_policy": "disabled-bot-path"
+    },
+    {
+      "path": "src/game/PlayerBot/Base/PlayerbotAI.cpp",
+      "line": 7859,
+      "symbol": "ModifyMoney",
+      "family": "playerbot-money",
+      "required_policy": "disabled-bot-path"
+    },
+    {
+      "path": "src/game/Trade/TradeHandler.cpp",
+      "line": 470,
+      "symbol": "ModifyMoney",
+      "family": "player-trade",
+      "required_policy": "conserved-player-transfer"
+    },
+    {
+      "path": "src/game/Trade/TradeHandler.cpp",
+      "line": 471,
+      "symbol": "ModifyMoney",
+      "family": "player-trade",
+      "required_policy": "conserved-player-transfer"
+    },
+    {
+      "path": "src/game/Trade/TradeHandler.cpp",
+      "line": 472,
+      "symbol": "ModifyMoney",
+      "family": "player-trade",
+      "required_policy": "conserved-player-transfer"
+    },
+    {
+      "path": "src/game/Trade/TradeHandler.cpp",
+      "line": 473,
+      "symbol": "ModifyMoney",
+      "family": "player-trade",
+      "required_policy": "conserved-player-transfer"
+    },
+    {
+      "path": "src/game/Trade/TradeHandler.cpp",
+      "line": 661,
+      "symbol": "SetMoney",
+      "family": "trade-offer",
+      "required_policy": "offer-only-no-money-mutation"
+    },
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 827,
+      "symbol": "SetUInt32Value",
+      "family": "character-create",
+      "required_policy": "zero-or-prefunded-starting-money"
+    }
+  ],
+  "helper_sites": [
+    {
+      "path": "src/game/Entities/Player.cpp",
+      "line": 424,
+      "symbol": "SetMoney",
+      "role": "TradeData definition"
+    },
+    {
+      "path": "src/game/Entities/Player.h",
+      "line": 846,
+      "symbol": "SetMoney",
+      "role": "TradeData declaration"
+    },
+    {
+      "path": "src/game/Entities/Player.h",
+      "line": 1387,
+      "symbol": "ModifyMoney",
+      "role": "Player inline definition"
+    },
+    {
+      "path": "src/game/Entities/Player.h",
+      "line": 1390,
+      "symbol": "SetMoney",
+      "role": "negative clamp helper"
+    },
+    {
+      "path": "src/game/Entities/Player.h",
+      "line": 1392,
+      "symbol": "SetMoney",
+      "role": "positive clamp helper"
+    },
+    {
+      "path": "src/game/Entities/Player.h",
+      "line": 1394,
+      "symbol": "SetMoney",
+      "role": "Player inline definition"
+    },
+    {
+      "path": "src/game/Mails/Mail.h",
+      "line": 243,
+      "symbol": "SetMoney",
+      "role": "MailDraft inline definition"
+    }
+  ]
+}

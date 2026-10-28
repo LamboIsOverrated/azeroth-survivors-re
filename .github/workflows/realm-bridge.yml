@@ -34,6 +34,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Verify the complete pinned currency mutation census
+        run: |
+          python3 -m unittest discover -s deploy/realm/bridge/audit/tests -v
+          audit_dir=$(mktemp -d)
+          mkdir "$audit_dir/core"
+          curl --fail --location --retry 2 --connect-timeout 10 --max-time 120 \
+            'https://codeload.github.com/cmangos/mangos-classic/tar.gz/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce' \
+            --output "$audit_dir/core.tar.gz"
+          printf '%s  %s\n' '64c63564d7304aed22b8b48481fb1e9f24062a39786bb4586441d260d9aaed83' "$audit_dir/core.tar.gz" | sha256sum --check -
+          tar --extract --gzip --file "$audit_dir/core.tar.gz" --strip-components=1 --directory "$audit_dir/core"
+          python3 deploy/realm/bridge/audit/check_mutations.py --source "$audit_dir/core" --json
       - name: Verify durable TEST outbox and C++ fault harness
         run: |
           npm ci --prefix deploy/realm

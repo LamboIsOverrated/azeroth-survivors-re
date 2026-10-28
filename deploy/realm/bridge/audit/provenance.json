@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/cmangos/mangos-classic",
+  "revision": "de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "archive_url": "https://codeload.github.com/cmangos/mangos-classic/tar.gz/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "observed_archive_sha256": "64c63564d7304aed22b8b48481fb1e9f24062a39786bb4586441d260d9aaed83",
+  "observed_archive_bytes": 35834101,
+  "review_date": "2026-10-28",
+  "prior_bridge_pinned_file_hashes_matched": 12,
+  "financial_scope": "No funds, live activation, runtime mutation, database read, account state or secrets."
+}
