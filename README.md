@@ -17,6 +17,20 @@ from-scratch WoW 1.12.1 client engine (Rust + [Bevy](https://bevy.org)).**
 > · [Discord](https://discord.gg/UzxaZuSAk)). This repository is a from-source local build of the
 > game, running on the [benilla](#how-its-built) / [wenilla](#how-its-built) engine, for personal use.
 
+### Browser Classic PvP realm on this branch
+
+The `feat/browser-pvp-mmo` branch restores the original MMO browser client with a shared Classic
+world, persistent accounts and characters, and faction open-world PvP. [Open the TEST realm](https://realm-web-pvp-staging.up.railway.app/).
+Accounts are managed by its owner through the realm administration page.
+
+Currency is **TEST only, nonredeemable, with no launch carryover**. Real token transfers remain
+closed; the final token address alone cannot enable them. See [tested gameplay and launch gates](docs/REALM-ACCEPTANCE.md)
+and [server operations](docs/REALM-OPERATIONS.md). The existing Survivors preview remains separate.
+
+Browser builds on this branch default to the MMO client, which needs the realm services. The
+Survivors description below documents the preserved offline variant; its local build command
+explicitly selects that variant.
+
 Pick a class and a battleground, then survive: WASD to move, your abilities cast themselves,
 enemies swarm in waves, you level up and pick upgrades, and a boss shows up every couple of
 minutes. **No server, no login, no account** — fully offline and self-contained.
@@ -58,7 +72,7 @@ Wallet changes reuse a checksum-pinned engine; Rust or game-client changes requi
 ```bash
 git clone https://github.com/OutThisLife/azeroth-survivors-re
 cd azeroth-survivors-re
-make build     # fetch game data + install toolchain + build the wasm (~5.5 GB download)
+WEB_VARIANT=survivors WEB_DIST=web/dist make build  # offline variant (~5.5 GB game-data download)
 make start     # → open http://127.0.0.1:8090/
 ```
 
