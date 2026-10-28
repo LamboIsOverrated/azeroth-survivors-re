@@ -14,6 +14,12 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_core_build_context_is_standalone(self):
+        dockerfile = (HERE / 'Dockerfile').read_text()
+        self.assertNotIn('COPY deploy/', dockerfile)
+        self.assertIn('COPY runtime.py ', dockerfile)
+        self.assertFalse((HERE / 'railway.json').exists())
+
     def env(self, **extra):
         return dict(DB_HOST='db.railway.internal', DB_ROOT_PASSWORD='Root_safe_123',
                     DB_MANGOS_PASSWORD='Core_safe_123', DB_REALMWEB_PASSWORD='Web_safe_123',

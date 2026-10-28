@@ -1,6 +1,8 @@
 # Private Vanilla TEST PvP core
 
-Build from repository root with `docker build -f deploy/realm/core/Dockerfile .`.
+Build the standalone context with `docker build deploy/realm/core`.
+The Railway source root directory must be `/deploy/realm/core` with Dockerfile
+path `Dockerfile`; do not inherit the repository root's Survivors railway.json.
 Use one replica and a persistent `/realm-data` volume. Keep the service private:
 never create public TCP proxies for 3306, 3724, 8085 or 7878. Stop timeout must be
 at least 60 seconds so the world can save characters before termination.

@@ -4,8 +4,8 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends python3 curl unzip \
     && rm -rf /var/lib/apt/lists/* \
     && rmdir /config && ln -s /realm-data/config /config
-COPY deploy/realm/core/runtime.py /opt/railway-core/runtime.py
-COPY deploy/realm/core/upstreams.env deploy/realm/core/PROVENANCE.md /opt/railway-core/
+COPY runtime.py /opt/railway-core/runtime.py
+COPY upstreams.env PROVENANCE.md /opt/railway-core/
 ENV PYTHONUNBUFFERED=1 PORT=8080
 EXPOSE 8080 3724 8085 7878
 STOPSIGNAL SIGTERM
