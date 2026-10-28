@@ -597,7 +597,7 @@ struct Run {
     expected_knockback: Option<[f32; 4]>,
     knockback: Option<KnockbackReceipt>,
     terrain: Option<phases::TerrainGrid>,
-    baseline_health: Option<u32>,
+    health: phases::HealthGuard,
     teleport: Option<TeleportReceipt>,
     capture: Option<observe::Capture>,
 }
@@ -671,14 +671,19 @@ impl Run {
             };
             if let Some(fields) = fields {
                 let health = fields.unit_health();
+                let flags = fields.unit_flags();
+                let baseline = self.health.baseline[side];
+                self.evidence
+                    .write(json!({"event":"health-observation","side":side,
+                    "guid":primary_guid,"health":health,"max_health":fields.unit_max_health(),
+                    "baseline":baseline,"unit_flags":flags}))?;
                 ensure!(
-                    phases::peaceful_state(fields.unit_flags(), health, self.baseline_health),
-                    "ordinary probe entered combat or health changed"
+                    self.health.observe(side, flags, health),
+                    "ordinary probe entered combat or health changed: side={side} guid={primary_guid} flags={flags:#x} health={health:?} baseline={baseline:?}"
                 );
-                if self.baseline_health.is_none() && health.is_some() {
-                    self.baseline_health = health;
+                if baseline.is_none() && health.is_some() {
                     self.evidence.write(
-                        json!({"event":"baseline-health","guid":primary_guid,"health":health}),
+                        json!({"event":"baseline-health","side":side,"guid":primary_guid,"health":health}),
                     )?;
                 }
             }
@@ -912,7 +917,7 @@ impl Run {
         }
         if let Some(gate) = &s.await_knockback {
             ensure!(
-                self.baseline_health.is_some_and(|health| health > 0),
+                self.health.baseline[0].is_some_and(|health| health > 0),
                 "live ordinary-avatar health baseline missing"
             );
             self.expected_knockback = Some(gate.launch);
@@ -1183,7 +1188,7 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         expected_knockback: None,
         knockback: None,
         terrain: f.terrain.clone(),
-        baseline_health: None,
+        health: Default::default(),
         teleport: None,
         capture: f.observation.as_ref().map(|o| observe::Capture {
             guid: o.guid,
@@ -1194,6 +1199,10 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
     ensure!(
         run.peers.iter().all(|p| p.entered),
         "all required world entries must be proven"
+    );
+    ensure!(
+        run.health.baseline[0] == Some(60),
+        "initial self health60 must be received before actions"
     );
     ensure!(
         distance(run.peers[0].pose, f.origin) < 0.1

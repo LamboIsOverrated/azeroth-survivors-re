@@ -248,6 +248,13 @@ continue as an unattended physics test. Unexpected world transfers, unconfigured
 or mismatched knockbacks still fail. Full transport boarding/detach, taxi, slow fall,
 resurrection, and midair reset acceptance therefore remain separate world/client
 gates. Do not turn those missing runs into a pass from model tests.
+The dedicated level-one self stream must initially report the attested 60 HP
+before actions. Health baselines are separate for the self and observer streams:
+pinned `Object.cpp`'s Fog of War can send the observer percentages rather than
+absolute hit points. Both streams still abort on combat or a change from their
+own baseline; sparse absent health fields do not reset it. Evidence records the
+receiver side, player GUID, health/max-health values and unit flags before each
+health check, including an abort.
 
 On the pinned source, modify-speed/aspeed, cast and aura commands require an
 in-game selected-player session (`allowConsole=false`). Some debug entries claim

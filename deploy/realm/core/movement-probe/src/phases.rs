@@ -8,6 +8,29 @@ pub fn peaceful_state(flags: u32, health: Option<u32>, baseline: Option<u32>) ->
             _ => true,
         }
 }
+#[derive(Default)]
+pub struct HealthGuard {
+    pub baseline: [Option<u32>; 2],
+}
+impl HealthGuard {
+    pub fn observe(&mut self, side: usize, flags: u32, health: Option<u32>) -> bool {
+        let Some(baseline) = self.baseline.get_mut(side) else {
+            return false;
+        };
+        // All declared probe avatars are the attested level-one, 60 HP fixtures.
+        // An observer may receive Fog of War percentages; self health is absolute.
+        if side == 0 && baseline.is_none() && health.is_some_and(|value| value != 60) {
+            return false;
+        }
+        if !peaceful_state(flags, health, *baseline) {
+            return false;
+        }
+        if baseline.is_none() {
+            *baseline = health;
+        }
+        true
+    }
+}
 
 pub fn speed_matches(expected: f32, actual: f32) -> bool {
     expected.is_finite() && actual.is_finite() && (expected - actual).abs() <= 0.01
@@ -175,6 +198,31 @@ mod tests {
         assert!(peaceful_state(0, None, Some(60)));
         assert!(!peaceful_state(0x80000, None, Some(60)));
         assert!(!peaceful_state(0, Some(59), Some(60)));
+    }
+    #[test]
+    fn health_guard_keeps_self_hitpoints_separate_from_observer_percentage() {
+        let mut guard = HealthGuard::default();
+        assert!(guard.observe(0, 0, Some(60)));
+        assert!(guard.observe(1, 0, Some(100)));
+        assert!(guard.observe(0, 0, None));
+        assert!(guard.observe(1, 0, None));
+        assert_eq!(guard.baseline, [Some(60), Some(100)]);
+        assert!(!guard.observe(0, 0, Some(59)));
+        assert!(!guard.observe(1, 0, Some(99)));
+        assert!(!guard.observe(0, 0x80000, None));
+        assert!(!guard.observe(1, 0x80000, None));
+        assert!(!guard.observe(2, 0, Some(60)));
+    }
+    #[test]
+    fn initial_self_health_must_match_attested_ordinary_level_one_fixture() {
+        for health in [0, 59, 61, 100] {
+            let mut guard = HealthGuard::default();
+            assert!(!guard.observe(0, 0, Some(health)));
+            assert_eq!(guard.baseline[0], None);
+        }
+        let mut guard = HealthGuard::default();
+        assert!(guard.observe(0, 0, None));
+        assert!(guard.observe(0, 0, Some(60)));
     }
     #[test]
     fn speed_gate_requires_exact_finite_authoritative_speed() {
