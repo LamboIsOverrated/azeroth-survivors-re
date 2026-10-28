@@ -52,9 +52,12 @@ export function mountMarket(root) {
   button('check').onclick=()=>run(()=>session.check());
   button('refresh').onclick=()=>run(()=>session.refresh());
   field('amount').oninput=()=>session.cancel();field('direction').onchange=()=>session.cancel();
-  root.addEventListener('realm-market:refresh',()=>run(()=>session.refresh()));
-  const dialog=root.closest('dialog');dialog?.addEventListener('toggle',()=>{if(dialog.open && !session.state.busy) void run(()=>session.refresh());});
-  void run(()=>session.refresh());return session;
+  // Opening the dialog and refreshing wallet balances can coincide with the
+  // initial read. Background refreshes do not compete with an active request.
+  const refreshIfIdle=()=>{if(!session.state.busy) return run(()=>session.refresh());};
+  root.addEventListener('realm-market:refresh',refreshIfIdle);
+  const dialog=root.closest('dialog');dialog?.addEventListener('toggle',()=>{if(dialog.open) void refreshIfIdle();});
+  void refreshIfIdle();return session;
 }
 
 function mountAll() {for(const root of document.querySelectorAll('[data-realm-market]')) mountMarket(root);}
