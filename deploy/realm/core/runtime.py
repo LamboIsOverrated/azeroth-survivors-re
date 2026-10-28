@@ -16,7 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SCHEMAS = ('classicrealmd', 'classiccharacters', 'classicmangos', 'classiclogs')
 CORE = 'de8f72993b9e1faa1bf92dd5505f3daec5cea3ce'
-STATE = dict(phase='starting', database=False, data=False, login=False, world=False, soap=False, ready=False)
+STATE = dict(phase='starting', maintenance=False, database=False, data=False,
+             login=False, world=False, soap=False, ready=False)
 STOP = threading.Event()
 CHILDREN = []
 
@@ -318,7 +319,40 @@ class Status(BaseHTTPRequestHandler):
         pass
 
 
+def serve_maintenance(env):
+    """Status-only process: no volume/config access, SQL or child processes."""
+    port = env.get('PORT', '8080')
+    if not str(port).isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError('invalid maintenance PORT')
+    STATE.update(phase='maintenance', maintenance=True, database=False, data=False,
+                 login=False, world=False, soap=False, ready=False)
+
+    def stop(signum, frame):
+        STOP.set()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    server = ThreadingHTTPServer(('0.0.0.0', int(port)), Status)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        STOP.wait()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def main():
+    maintenance = os.environ.get('REALM_MAINTENANCE', '0')
+    if maintenance not in ('0', '1'):
+        raise ValueError('REALM_MAINTENANCE must be 0 or 1')
+    if maintenance == '1':
+        # This branch must precede every SQL/config/data initialization path,
+        # including the explicit initialize/extract command modes.
+        serve_maintenance(os.environ)
+        return
     os.umask(0o022)
     cfg = settings(os.environ)
     root = Path('/realm-data')

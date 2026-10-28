@@ -19,6 +19,8 @@ Required environment:
   underscore characters. Seeded example account names are rejected.
 - `SOAP_ADMIN_PASSWORD`: generated 12-16 alphanumeric characters (Vanilla limit).
 - `PORT`: status listener, default 8080. `EXTRACT_THREADS`: default 2, max 64.
+- `REALM_MAINTENANCE`: `1` starts only the Python status wrapper; default `0`
+  starts the normal realm. Other values are rejected before initialization.
 
 The web service must use the same SOAP credentials against private port 7878,
 and `realmweb` plus `DB_REALMWEB_PASSWORD` for read-only auth/character queries.
@@ -64,6 +66,20 @@ directories as a completed extraction.
 `GET /readyz` returns 503 until schema checks, completed data extraction and all
 three actual TCP listeners pass. This does not prove browser world entry or
 PvP; those require separate interactive acceptance. Status has no admin actions.
+
+For a coherent operator backup, set `REALM_MAINTENANCE=1` and restart/deploy the
+core through its ordinary graceful stop procedure. This is a startup fence,
+not a live command: wait for the previous world/extractor process to exit and
+its character saves to finish. The replacement process starts only Python
+status HTTP, without reading database credentials, creating volume/config/lock
+files, checking SQL, extracting MPQs, or launching login/world/SOAP children.
+The flag overrides even explicit `initialize` and `extract` modes. `/healthz`
+and `/status` return HTTP 200 with `maintenance: true`, `phase: "maintenance"`,
+`ready: false` and every component readiness false; `/readyz` returns HTTP 503.
+This matches the backup tool's maintenance proof. Use the normal wrapper
+command (`python3 /opt/railway-core/runtime.py` or its `serve` mode) for backup
+process inspection. Quiesce the web writer separately before capture. Return
+the flag to `0` and restart after backup/restore work is finished.
 
 Run `python -m unittest discover -s deploy/realm/core -v` for portable safety
 checks. A Linux container smoke test with real MariaDB is still required before

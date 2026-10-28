@@ -1,11 +1,16 @@
 import importlib.util
+import json
+import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 HERE = pathlib.Path(__file__).parent
@@ -15,6 +20,57 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_maintenance_runs_only_status_without_database_credentials_in_all_modes(self):
+        for mode in ('serve', 'initialize', 'extract'):
+            with self.subTest(mode=mode), socket.socket() as reservation:
+                reservation.bind(('127.0.0.1', 0))
+                port = reservation.getsockname()[1]
+                reservation.close()
+                env = {key: value for key, value in os.environ.items()
+                       if not key.startswith(('DB_', 'SOAP_', 'REALM_'))}
+                env.update(REALM_MAINTENANCE='1', PORT=str(port))
+                process = subprocess.Popen([sys.executable, '-B', str(HERE / 'runtime.py'), mode],
+                                           env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    deadline = time.monotonic() + 5
+                    while True:
+                        if process.poll() is not None:
+                            self.fail('Maintenance wrapper exited instead of serving status: '
+                                      + process.stderr.read().decode(errors='replace'))
+                        try:
+                            with urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=.3) as reply:
+                                health = json.load(reply)
+                                self.assertEqual(reply.status, 200)
+                                self.assertEqual(reply.headers['Cache-Control'], 'no-store')
+                            break
+                        except (OSError, urllib.error.URLError):
+                            if time.monotonic() >= deadline:
+                                self.fail('Maintenance status did not start')
+                            time.sleep(.02)
+                    self.assertIs(health['maintenance'], True)
+                    self.assertIs(health['ready'], False)
+                    self.assertEqual(health['phase'], 'maintenance')
+                    for key in ('database', 'data', 'login', 'world', 'soap'):
+                        self.assertIs(health[key], False)
+                    with self.assertRaises(urllib.error.HTTPError) as failure:
+                        urllib.request.urlopen(f'http://127.0.0.1:{port}/readyz', timeout=.5)
+                    self.assertEqual(failure.exception.code, 503)
+                    self.assertIs(json.load(failure.exception)['maintenance'], True)
+                    children = pathlib.Path(f'/proc/{process.pid}/task/{process.pid}/children')
+                    if children.is_file():
+                        self.assertEqual(children.read_text().strip(), '')
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.communicate(timeout=5)
+
+    def test_invalid_maintenance_value_fails_before_initialization(self):
+        with patch.dict(runtime.os.environ, {'REALM_MAINTENANCE': 'true'}, clear=True), \
+                patch.object(runtime, 'settings', side_effect=AssertionError('DB settings must not be read')), \
+                patch.object(runtime.subprocess, 'Popen', side_effect=AssertionError('writers must not start')):
+            with self.assertRaisesRegex(ValueError, 'REALM_MAINTENANCE'):
+                runtime.main()
+
     def test_core_build_context_is_standalone(self):
         dockerfile = (HERE / 'Dockerfile').read_text()
         self.assertNotIn('COPY deploy/', dockerfile)
