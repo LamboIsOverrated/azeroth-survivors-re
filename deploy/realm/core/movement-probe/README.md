@@ -226,8 +226,8 @@ direction and bounded expected launch. The probe records and ACKs its real
 counter/quad; it sends no cast, privileged command or combat action.
 Only this prelaunch attended wait can exceed 30 seconds. Its excess reserves at
 most 90 extra seconds in the whole-process watchdog and schedule, making their
-maximum deadline 270 seconds. Flight and expiry clocks still start exclusively
-from the actual received launch, with the same bounds. Speed and teleport action
+maximum deadline 270 seconds. Flight starts at matching-ACK application;
+absolute expiry starts at the actual received launch, with the same bounds. Speed and teleport action
 windows, health/combat, packet, terrain and movement checks are unchanged.
 
 `relative_to_knockback` uses the last accepted primary pose. With
@@ -258,19 +258,45 @@ and a survey covering the last accepted pose plus3.493 yards in worldY. It never
 creates a server launch or sends an operator action. After the one attended cast,
 it sends four finite deliberately invalid ACKs using that actual native receipt:
 wrong counter, wrong quad,39-yard origin, and+10-yardZ origin. Each must produce
-no primary movement relay during its bounded observation window. Then ordinary
+no primary movement relay during its 500 ms observation window. Then ordinary
 `START_FORWARD` at the last reported pose must relay positively. After the
 configured delay from that packet, the matching one-shot ACK proposes the
-surveyed+Y3.493 origin. Its observer relay is required, a replay must not relay,
-and subsequent ballistic points must relay. Native logs remain necessary to
+surveyed+Y3.493 origin. Its observer relay and two subsequent airborne ballistic
+points are required. Mark the second airborne step `replay_after_ballistic: true`:
+only then send the one-shot replay and require no relay for 500 ms. This ordering
+keeps the negative replay wait out of the first two flight samples. The validator
+requires this phase for a first-ACK fixture. Native logs remain necessary to
 attribute each refusal; absence of a relay alone is not a reason diagnosis.
-The ordinary barrier requires exact flags1 and the protocol's `Pose` verb,
-plus the baseline coordinates. Relay flags and verb are retained in memory and
-evidence. The current event API coalesces start and knockback opcodes as `Pose`;
-it does not expose their exact opcode. Any late JUMP8192 relay at the old baseline
-aborts the entire first-ACK run, including after an observation window ends or
-the relay list is cleared. It cannot impersonate ordinary movement. Matching
-ACK confirmation requires JUMP8192 at the distinct surveyed+Y3.493 origin.
+The ordinary barrier requires exact flags1, raw `MSG_MOVE_START_FORWARD`, and
+baseline coordinates. The reader retains the raw packet opcode even though
+the event API coalesces start and knockback verbs as `Pose`. Any late knockback
+ACK relay at the old baseline, or any movement relay at the invalid39-yard/+10Z
+origins, aborts the entire first-ACK run across observation windows and relay
+list clears. Matching ACK confirmation requires JUMP8192 and raw
+`MSG_MOVE_KNOCK_BACK` at the distinct surveyed+Y3.493 origin. After that positive
+has been observed, the replay trial permanently forbids another knockback ACK
+relay at that origin. Ordinary heartbeats at a valid pose remain distinguishable
+by their raw opcode and are not treated as ACK replays.
+
+Positive ground/return and first-ACK confirmation wait for the exact expected
+pose, flags and raw opcode for at most1,000 ms, returning immediately on a match.
+Airborne positive waits retain their configured window, capped at1,000 ms, and
+their actual application clock; a sample already at the surveyed floor fails
+instead of inventing an airborne positive by clamping. Reader timestamps are
+taken after packet decode, separately from main-loop handling timestamps, so
+evidence records queue delay as well as wire time. Visibility create/out-of-range/
+destroy and socket/decode failures are recorded without packet payloads. Negative
+observations require the observer to retain current visibility. A missing relay
+reports an observation failure, not a native validation refusal.
+Each negative window captures a monotonically increasing visibility-loss epoch;
+a loss followed by a create cannot restore that window's evidence. Its reader
+time interval is retained through logout, so a queued loss decoded inside an
+already completed negative window still aborts when handled later.
+
+The worst-case action schedule, including these positive deadlines, is capped
+at120 seconds plus the prelaunch allowance. The independent process deadline
+remains180 seconds plus that allowance (maximum270); neither a late relay nor a
+replay renews flight, absolute launch expiry or the process watchdog.
 
 The evidence records the actual ordinary-packet delay and total native-receipt
 age at matching ACK. Negative trials add time before the ordinary packet, so

@@ -1,10 +1,12 @@
 mod entry;
 mod observe;
 mod phases;
+mod relay;
 use anyhow::{bail, ensure, Context, Result};
 use benilla_protocol::{
     messages::opcode as op, JumpInfo, Poll, SessionEvent, TransportPose, WorldSession, WorldWriter,
 };
+use relay::{ForbiddenRelay, RelayTarget, RelayWindow, SeenRelay};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -68,6 +70,8 @@ struct Step {
     relative_to_knockback: bool,
     #[serde(default)]
     ballistic_from_knockback: bool,
+    #[serde(default)]
+    replay_after_ballistic: bool,
     #[serde(default)]
     wait_knockback_age_ms: Option<u64>,
     #[serde(default)]
@@ -292,6 +296,9 @@ fn validate(f: &Fixture) -> Result<()> {
     let mut has_knockback = false;
     let mut has_expiry_wait = false;
     let mut has_teleport = false;
+    let mut first_ack_probe = false;
+    let mut ballistic_positives = 0;
+    let mut replay_seen = false;
     for (i, s) in f.steps.iter().enumerate() {
         if let Some(gate) = &s.await_knockback {
             ensure!(
@@ -303,6 +310,7 @@ fn validate(f: &Fixture) -> Result<()> {
             );
             ensure!(f.terrain.is_some(), "knockback needs measured terrain");
             if let Some(probe) = &gate.first_ack_probe {
+                first_ack_probe = true;
                 probe.validate()?;
                 ensure!(
                     s.ballistic_from_knockback && s.relative_to_knockback && s.accept,
@@ -329,6 +337,21 @@ fn validate(f: &Fixture) -> Result<()> {
                     && s.flags == 8192),
             "ballistic sample must use only actual server launch"
         );
+        if s.ballistic_from_knockback && s.accept {
+            ballistic_positives += 1;
+        }
+        if s.replay_after_ballistic {
+            ensure!(
+                first_ack_probe
+                    && s.ballistic_from_knockback
+                    && s.accept
+                    && ballistic_positives >= 2
+                    && !replay_seen
+                    && !has_expiry_wait,
+                "replay requires two native airborne positives and precedes expiry"
+            );
+            replay_seen = true;
+        }
         if let Some(age) = s.wait_knockback_age_ms {
             ensure!(
                 has_knockback && !has_expiry_wait && (61000..=65000).contains(&age),
@@ -458,23 +481,32 @@ fn validate(f: &Fixture) -> Result<()> {
         f.steps
             .iter()
             .map(|s| s.delay_ms
-                + s.observe_ms
+                + if s.accept {
+                    relay::positive_limit_ms(s.observe_ms, s.flags & 8192 != 0)
+                } else {
+                    s.observe_ms.max(500)
+                }
+                + if s.replay_after_ballistic { 500 } else { 0 }
                 + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.await_run_speed.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.await_knockback.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.await_knockback
                     .as_ref()
                     .and_then(|g| g.first_ack_probe.as_ref())
-                    .map_or(0, |p| p.delay_ms + 2000)
+                    .map_or(0, |p| p.delay_ms.max(1000) + 3000)
                 + s.wait_knockback_age_ms.unwrap_or(0))
             .sum::<u64>()
-            <= 110000 + operator_wait_grace_ms(f),
+            <= 120000 + operator_wait_grace_ms(f),
         "step schedule exceeds deadline reserve"
     );
     let last = f.steps.last().unwrap();
     ensure!(
         !has_knockback || (has_expiry_wait && last.terrain_follow),
         "knockback run must include expiry and measured walk back"
+    );
+    ensure!(
+        !first_ack_probe || replay_seen,
+        "first ACK probe requires replay after two airborne positives"
     );
     ensure!(
         !has_teleport || (last.relative_to_teleport && last.fall_from_teleport),
@@ -501,8 +533,19 @@ impl Evidence {
     }
 }
 enum Input {
-    Event(usize, Box<SessionEvent>),
-    Error(usize, String),
+    Event {
+        side: usize,
+        opcode: u16,
+        received_at: Instant,
+        event: Box<SessionEvent>,
+    },
+    Error {
+        side: usize,
+        opcode: Option<u16>,
+        received_at: Instant,
+        stage: &'static str,
+        message: String,
+    },
 }
 struct Peer {
     writer: WorldWriter,
@@ -589,27 +632,51 @@ fn connect(
     thread::spawn(move || {
         for _ in 0..8192 {
             match reader.poll() {
-                Ok(Poll::Events { events, .. }) => {
+                Ok(Poll::Events { opcode, events, .. }) => {
+                    let received_at = Instant::now();
                     for event in events {
-                        if tx.send(Input::Event(side, Box::new(event))).is_err() {
+                        if tx
+                            .send(Input::Event {
+                                side,
+                                opcode,
+                                received_at,
+                                event: Box::new(event),
+                            })
+                            .is_err()
+                        {
                             return;
                         }
                     }
                 }
                 Ok(Poll::Skipped { opcode, .. }) => {
-                    let _ = tx.send(Input::Error(
+                    let _ = tx.send(Input::Error {
                         side,
-                        format!("unparseable packet {opcode:#x}"),
-                    ));
+                        opcode: Some(opcode),
+                        received_at: Instant::now(),
+                        stage: "decode",
+                        message: "unparseable server packet; payload omitted".into(),
+                    });
                     return;
                 }
                 Err(e) => {
-                    let _ = tx.send(Input::Error(side, format!("stream ended: {e}")));
+                    let _ = tx.send(Input::Error {
+                        side,
+                        opcode: None,
+                        received_at: Instant::now(),
+                        stage: "socket",
+                        message: format!("stream ended: {e}"),
+                    });
                     return;
                 }
             }
         }
-        let _ = tx.send(Input::Error(side, "inbound packet ceiling".into()));
+        let _ = tx.send(Input::Error {
+            side,
+            opcode: None,
+            received_at: Instant::now(),
+            stage: "packet-ceiling",
+            message: "inbound packet ceiling".into(),
+        });
     });
     Ok(Peer {
         writer,
@@ -632,19 +699,18 @@ struct KnockbackReceipt {
     at: Instant,
     applied: Option<Instant>,
 }
-#[derive(Clone, Copy, Debug)]
-struct SeenRelay {
-    pose: [f32; 3],
-    flags: u32,
-    verb: benilla_protocol::messages::RelayVerb,
-}
 fn invalid_ack_relay(relay: &SeenRelay, baseline: [f32; 3]) -> bool {
-    relay.flags & 8192 != 0 && distance(relay.pose, baseline) < 0.1
+    ForbiddenRelay {
+        pose: baseline,
+        opcode: Some(op::MSG_MOVE_KNOCK_BACK),
+    }
+    .rejects(relay)
 }
 fn ordinary_start_barrier(relays: &[SeenRelay], baseline: [f32; 3]) -> bool {
     !relays.iter().any(|r| invalid_ack_relay(r, baseline))
         && relays.iter().any(|r| {
             r.flags == 1
+                && r.opcode == op::MSG_MOVE_START_FORWARD
                 && r.verb == benilla_protocol::messages::RelayVerb::Pose
                 && distance(r.pose, baseline) < 0.1
         })
@@ -674,7 +740,8 @@ struct Run {
     evidence: Evidence,
     forbidden: Vec<([f32; 3], u32)>,
     relays: Vec<SeenRelay>,
-    invalid_ack_baseline: Option<[f32; 3]>,
+    forbidden_ack_relays: Vec<ForbiddenRelay>,
+    observer_coverage: relay::ObserverCoverage,
     sent: usize,
     map: u32,
     expected_teleport: Option<[f32; 3]>,
@@ -701,342 +768,412 @@ impl Run {
         Ok(())
     }
     fn pump(&mut self, duration: Duration) -> Result<()> {
-        let until = Instant::now() + duration;
-        while Instant::now() < until {
-            let input = match self
-                .rx
-                .recv_timeout(until.saturating_duration_since(Instant::now()))
-            {
-                Ok(v) => v,
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(e) => return Err(e.into()),
-            };
-            let (side, event) = match input {
-                Input::Event(side, event) => (side, *event),
-                Input::Error(side, message) => {
-                    ensure!(self.peers[side].logged_out, "peer {side}: {message}");
-                    continue;
-                }
-            };
-            if side == 0 {
-                if let Some(record) = self.capture.as_mut().and_then(|c| c.event(&event)) {
-                    self.evidence.write(record)?;
-                }
+        self.pump_until(duration, None)
+    }
+    fn pump_until(&mut self, duration: Duration, target: Option<&RelayWindow>) -> Result<()> {
+        let deadline = Instant::now() + duration;
+        relay::drive_until(
+            self,
+            deadline,
+            |state| {
+                target.is_some_and(|window| state.relays.iter().any(|relay| window.accepts(relay)))
+            },
+            |state, remaining| {
+                let input = match state.rx.recv_timeout(remaining) {
+                    Ok(input) => input,
+                    Err(mpsc::RecvTimeoutError::Timeout) => return Ok(false),
+                    Err(error) => return Err(error.into()),
+                };
+                state.process_input(input)?;
+                Ok(true)
+            },
+        )
+    }
+    fn process_input(&mut self, input: Input) -> Result<()> {
+        let (side, opcode, received_at, event) = match input {
+            Input::Event {
+                side,
+                opcode,
+                received_at,
+                event,
+            } => (side, opcode, received_at, *event),
+            Input::Error {
+                side,
+                opcode,
+                received_at,
+                stage,
+                message,
+            } => {
+                self.evidence.write(json!({"event":"reader-failure","side":side,"opcode":opcode,"stage":stage,"detail":message,"reader_elapsed_us":received_at.saturating_duration_since(self.evidence.begin).as_micros(),"queue_delay_us":received_at.elapsed().as_micros()}))?;
+                ensure!(self.peers[side].logged_out, "peer {side}: {message}");
+                return Ok(());
             }
-            if let SessionEvent::UnitMove {
-                guid,
-                position,
-                flags,
-                time,
-                verb,
-                ..
-            } = &event
-            {
-                if side == 1 && *guid == self.peers[0].guid {
-                    self.evidence.write(json!({"event":"accepted-relay","pose":position,"flags":flags,"wire_time":time,"verb":format!("{verb:?}")}))?;
-                    let relay = SeenRelay {
-                        pose: *position,
-                        flags: *flags,
-                        verb: *verb,
-                    };
-                    ensure!(
-                        !self
-                            .invalid_ack_baseline
-                            .is_some_and(|baseline| invalid_ack_relay(&relay, baseline)),
-                        "late invalid baseline ACK relay during first-ACK probe: {relay:?}"
-                    );
-                    ensure!(
-                        relay_safe(&self.forbidden, *position, *flags),
-                        "server relayed forbidden pose or movement capability"
-                    );
-                    if self
-                        .forbidden
-                        .iter()
-                        .any(|(p, mask)| *mask != 0 && distance(*p, *position) < 0.1)
-                    {
-                        self.peers[0].pose = *position;
-                        self.evidence.write(
-                            json!({"event":"corrected-relay","pose":position,"flags":flags}),
-                        )?;
-                    }
-                    self.relays.push(relay);
-                }
+        };
+        let primary_guid = self.peers[0].guid;
+        let visibility = match &event {
+            SessionEvent::ObjectCreate { guid, .. } if *guid == primary_guid => {
+                Some((true, "create"))
             }
-            let primary_guid = self.peers[0].guid;
-            if let SessionEvent::ObjectCreate {
-                guid,
-                speeds: Some(speeds),
-                ..
-            } = &event
-            {
-                if side == 0 && *guid == primary_guid && self.initial_run_speed.is_none() {
-                    self.initial_run_speed = Some(speeds.run);
-                    self.evidence.write(json!({"event":"initial-self-run-speed","guid":guid,"run_speed":speeds.run}))?;
-                }
+            SessionEvent::ObjectsRemoved(guids) if guids.contains(&primary_guid) => {
+                Some((false, "out-of-range"))
             }
-            let fields = match &event {
-                SessionEvent::ObjectCreate { guid, fields, .. }
-                | SessionEvent::ObjectValues { guid, fields }
-                    if *guid == primary_guid =>
-                {
-                    Some(fields)
-                }
-                _ => None,
-            };
-            if let Some(fields) = fields {
-                if side == 0 && self.require_money_zero {
-                    if let Some(money) = fields.player_money() {
-                        self.evidence.write(json!({"event":"native-money-observation","guid":primary_guid,"money":money}))?;
-                        phases::require_zero_money(Some(money))?;
-                        self.money = Some(money);
-                    }
-                }
-                let health = fields.unit_health();
-                let flags = fields.unit_flags();
-                let baseline = self.health.baseline[side];
-                self.evidence
-                    .write(json!({"event":"health-observation","side":side,
-                    "guid":primary_guid,"health":health,"max_health":fields.unit_max_health(),
-                    "baseline":baseline,"unit_flags":flags}))?;
+            SessionEvent::ObjectDestroyed(guid) if *guid == primary_guid => {
+                Some((false, "destroy"))
+            }
+            _ => None,
+        };
+        if side == 1 {
+            if let Some((visible, reason)) = visibility {
+                self.evidence.write(json!({"event":"observer-visibility","guid":primary_guid,"visible":visible,"reason":reason,"opcode":opcode,"reader_elapsed_us":received_at.saturating_duration_since(self.evidence.begin).as_micros(),"queue_delay_us":received_at.elapsed().as_micros()}))?;
+                self.observer_coverage.observe(visible, received_at)?;
+            }
+        }
+        if side == 0 {
+            if let Some(record) = self.capture.as_mut().and_then(|c| c.event(&event)) {
+                self.evidence.write(record)?;
+            }
+        }
+        if let SessionEvent::UnitMove {
+            guid,
+            position,
+            flags,
+            time,
+            verb,
+            ..
+        } = &event
+        {
+            if side == 1 && *guid == self.peers[0].guid {
+                self.evidence.write(json!({"event":"accepted-relay","pose":position,"flags":flags,"wire_time":time,"verb":format!("{verb:?}"),"opcode":opcode,"reader_elapsed_us":received_at.saturating_duration_since(self.evidence.begin).as_micros(),"queue_delay_us":received_at.elapsed().as_micros()}))?;
+                let relay = SeenRelay {
+                    pose: *position,
+                    flags: *flags,
+                    verb: *verb,
+                    opcode,
+                    received_at,
+                };
                 ensure!(
-                    self.health.observe(side, flags, health),
-                    "ordinary probe entered combat or health changed: side={side} guid={primary_guid} flags={flags:#x} health={health:?} baseline={baseline:?}"
+                    !self
+                        .forbidden_ack_relays
+                        .iter()
+                        .any(|guard| guard.rejects(&relay)),
+                    "late invalid ACK or replay relay during first-ACK probe: {relay:?}"
                 );
-                if baseline.is_none() && health.is_some() {
-                    self.evidence.write(
-                        json!({"event":"baseline-health","side":side,"guid":primary_guid,"health":health}),
-                    )?;
+                ensure!(
+                    relay_safe(&self.forbidden, *position, *flags),
+                    "server relayed forbidden pose or movement capability"
+                );
+                if self
+                    .forbidden
+                    .iter()
+                    .any(|(p, mask)| *mask != 0 && distance(*p, *position) < 0.1)
+                {
+                    self.peers[0].pose = *position;
+                    self.evidence
+                        .write(json!({"event":"corrected-relay","pose":position,"flags":flags}))?;
+                }
+                self.relays.push(relay);
+            }
+        }
+        let primary_guid = self.peers[0].guid;
+        if let SessionEvent::ObjectCreate {
+            guid,
+            speeds: Some(speeds),
+            ..
+        } = &event
+        {
+            if side == 0 && *guid == primary_guid && self.initial_run_speed.is_none() {
+                self.initial_run_speed = Some(speeds.run);
+                self.evidence.write(
+                    json!({"event":"initial-self-run-speed","guid":guid,"run_speed":speeds.run}),
+                )?;
+            }
+        }
+        let fields = match &event {
+            SessionEvent::ObjectCreate { guid, fields, .. }
+            | SessionEvent::ObjectValues { guid, fields }
+                if *guid == primary_guid =>
+            {
+                Some(fields)
+            }
+            _ => None,
+        };
+        if let Some(fields) = fields {
+            if side == 0 && self.require_money_zero {
+                if let Some(money) = fields.player_money() {
+                    self.evidence.write(json!({"event":"native-money-observation","guid":primary_guid,"money":money}))?;
+                    phases::require_zero_money(Some(money))?;
+                    self.money = Some(money);
                 }
             }
-            let p = &mut self.peers[side];
-            match event {
-                SessionEvent::Worldport {
-                    map_id,
-                    position,
-                    orientation,
-                    needs_ack,
-                } => {
-                    let first = p.entry.world_verified(map_id, needs_ack)?;
-                    self.evidence.write(json!({"event":"entry-world-verified","side":side,"guid":p.guid,"map":map_id,"pose":position,"first":first,"needs_ack":needs_ack}))?;
-                    if first {
-                        p.pose = position;
-                        p.orientation = orientation;
-                        p.entered = true;
-                        self.evidence.write(
-                            json!({"event":"entered","side":side,"map":map_id,"pose":position}),
-                        )?;
-                    }
-                }
-                SessionEvent::ObjectCreate { guid, kind, .. } if guid == p.guid => {
-                    let first = p
-                        .entry
-                        .self_created(guid, kind == benilla_protocol::EntityKind::Player)?;
-                    self.evidence.write(json!({"event":"entry-self-created","side":side,"guid":guid,"kind":format!("{kind:?}"),"first":first,"declared_map":self.map}))?;
-                }
-                SessionEvent::Teleport {
-                    guid,
-                    counter,
-                    position,
-                    orientation,
-                } if guid == p.guid => {
-                    ensure!(
-                        p.entry.is_claimed(),
-                        "teleport ACK before post-entry mover claim"
-                    );
-                    ensure!(
-                        side == 0
-                            && self.expected_teleport.is_some_and(|wanted| {
-                                phases::matches_destination(wanted, position)
-                            }),
-                        "unexpected or mismatched server teleport"
-                    );
-                    self.evidence.write(json!({"event":"server-teleport","side":side,"pose":position,"counter":counter}))?;
+            let health = fields.unit_health();
+            let flags = fields.unit_flags();
+            let baseline = self.health.baseline[side];
+            self.evidence
+                .write(json!({"event":"health-observation","side":side,
+                "guid":primary_guid,"health":health,"max_health":fields.unit_max_health(),
+                "baseline":baseline,"unit_flags":flags}))?;
+            ensure!(
+                self.health.observe(side, flags, health),
+                "ordinary probe entered combat or health changed: side={side} guid={primary_guid} flags={flags:#x} health={health:?} baseline={baseline:?}"
+            );
+            if baseline.is_none() && health.is_some() {
+                self.evidence.write(
+                    json!({"event":"baseline-health","side":side,"guid":primary_guid,"health":health}),
+                )?;
+            }
+        }
+        let p = &mut self.peers[side];
+        match event {
+            SessionEvent::Worldport {
+                map_id,
+                position,
+                orientation,
+                needs_ack,
+            } => {
+                let first = p.entry.world_verified(map_id, needs_ack)?;
+                self.evidence.write(json!({"event":"entry-world-verified","side":side,"guid":p.guid,"map":map_id,"pose":position,"first":first,"needs_ack":needs_ack}))?;
+                if first {
                     p.pose = position;
                     p.orientation = orientation;
-                    p.writer.teleport_ack(guid, counter)?;
-                    self.teleport = Some(TeleportReceipt {
-                        position,
-                        at: Instant::now(),
-                    });
-                    self.expected_teleport = None;
+                    p.entered = true;
                     self.evidence.write(
-                        json!({"event":"server-teleport-ack-sent","guid":guid,"counter":counter}),
+                        json!({"event":"entered","side":side,"map":map_id,"pose":position}),
                     )?;
                 }
-                SessionEvent::ForceSpeedChange {
-                    guid,
+            }
+            SessionEvent::ObjectCreate { guid, kind, .. } if guid == p.guid => {
+                let first = p
+                    .entry
+                    .self_created(guid, kind == benilla_protocol::EntityKind::Player)?;
+                self.evidence.write(json!({"event":"entry-self-created","side":side,"guid":guid,"kind":format!("{kind:?}"),"first":first,"declared_map":self.map}))?;
+            }
+            SessionEvent::Teleport {
+                guid,
+                counter,
+                position,
+                orientation,
+            } if guid == p.guid => {
+                ensure!(
+                    p.entry.is_claimed(),
+                    "teleport ACK before post-entry mover claim"
+                );
+                ensure!(
+                    side == 0
+                        && self.expected_teleport.is_some_and(|wanted| {
+                            phases::matches_destination(wanted, position)
+                        }),
+                    "unexpected or mismatched server teleport"
+                );
+                self.evidence.write(json!({"event":"server-teleport","side":side,"pose":position,"counter":counter}))?;
+                p.pose = position;
+                p.orientation = orientation;
+                p.writer.teleport_ack(guid, counter)?;
+                self.teleport = Some(TeleportReceipt {
+                    position,
+                    at: Instant::now(),
+                });
+                self.expected_teleport = None;
+                self.evidence.write(
+                    json!({"event":"server-teleport-ack-sent","guid":guid,"counter":counter}),
+                )?;
+            }
+            SessionEvent::ForceSpeedChange {
+                guid,
+                kind,
+                counter,
+                speed,
+            } if guid == p.guid => {
+                ensure!(
+                    p.entry.is_claimed(),
+                    "speed ACK before post-entry mover claim"
+                );
+                let mut pose = p.pose;
+                let mut flags = 0;
+                let mut fall_ms = 0;
+                let mut jump = None;
+                if side == 0 {
+                    if let Some(tp) = &self.teleport {
+                        let elapsed = tp.at.elapsed();
+                        if elapsed.as_secs_f64() <= 10.0 {
+                            pose = phases::fall_position(
+                                tp.position,
+                                elapsed.as_secs_f64(),
+                                self.floor_z,
+                            )?;
+                            fall_ms = u32::try_from(elapsed.as_millis())?;
+                            if pose[2] > self.floor_z + 0.1 {
+                                flags = 8192;
+                                jump = Some(JumpInfo {
+                                    zspeed: 0.,
+                                    cos_angle: 1.,
+                                    sin_angle: 0.,
+                                    xy_speed: 0.,
+                                });
+                            }
+                        } else {
+                            ensure!(
+                                p.pose[2] <= self.floor_z + 0.15,
+                                "stale airborne speed ACK clock"
+                            );
+                        }
+                    }
+                }
+                if side == 0 && kind == benilla_protocol::SpeedKind::Run {
+                    if let Some(expected) = self.expected_run_speed {
+                        ensure!(
+                            phases::speed_matches(expected, speed),
+                            "unexpected authoritative run speed"
+                        );
+                        ensure!(
+                            !self.speed_above_floor || pose[2] > self.floor_z + 2.,
+                            "speed change arrived after airborne window"
+                        );
+                        self.speed_ack_seen = true;
+                    }
+                }
+                self.evidence.write(json!({"event":"server-speed-ack","side":side,"speed":speed,"kind":format!("{kind:?}"),"counter":counter,"pose":pose,"flags":flags}))?;
+                p.writer.force_speed_change_ack(
                     kind,
+                    guid,
                     counter,
                     speed,
-                } if guid == p.guid => {
-                    ensure!(
-                        p.entry.is_claimed(),
-                        "speed ACK before post-entry mover claim"
-                    );
-                    let mut pose = p.pose;
-                    let mut flags = 0;
-                    let mut fall_ms = 0;
-                    let mut jump = None;
-                    if side == 0 {
-                        if let Some(tp) = &self.teleport {
-                            let elapsed = tp.at.elapsed();
-                            if elapsed.as_secs_f64() <= 10.0 {
-                                pose = phases::fall_position(
-                                    tp.position,
-                                    elapsed.as_secs_f64(),
-                                    self.floor_z,
-                                )?;
-                                fall_ms = u32::try_from(elapsed.as_millis())?;
-                                if pose[2] > self.floor_z + 0.1 {
-                                    flags = 8192;
-                                    jump = Some(JumpInfo {
-                                        zspeed: 0.,
-                                        cos_angle: 1.,
-                                        sin_angle: 0.,
-                                        xy_speed: 0.,
-                                    });
-                                }
-                            } else {
-                                ensure!(
-                                    p.pose[2] <= self.floor_z + 0.15,
-                                    "stale airborne speed ACK clock"
-                                );
-                            }
-                        }
-                    }
-                    if side == 0 && kind == benilla_protocol::SpeedKind::Run {
-                        if let Some(expected) = self.expected_run_speed {
-                            ensure!(
-                                phases::speed_matches(expected, speed),
-                                "unexpected authoritative run speed"
-                            );
-                            ensure!(
-                                !self.speed_above_floor || pose[2] > self.floor_z + 2.,
-                                "speed change arrived after airborne window"
-                            );
-                            self.speed_ack_seen = true;
-                        }
-                    }
-                    self.evidence.write(json!({"event":"server-speed-ack","side":side,"speed":speed,"kind":format!("{kind:?}"),"counter":counter,"pose":pose,"flags":flags}))?;
-                    p.writer.force_speed_change_ack(
-                        kind,
-                        guid,
-                        counter,
-                        speed,
-                        flags,
-                        pose,
-                        p.orientation,
-                        0.,
-                        fall_ms,
-                        jump,
-                        None,
-                    )?;
-                }
-                SessionEvent::SpeedChanged { guid, kind, speed }
-                    if side == 1
-                        && guid == primary_guid
-                        && kind == benilla_protocol::SpeedKind::Run =>
+                    flags,
+                    pose,
+                    p.orientation,
+                    0.,
+                    fall_ms,
+                    jump,
+                    None,
+                )?;
+            }
+            SessionEvent::SpeedChanged { guid, kind, speed }
+                if side == 1
+                    && guid == primary_guid
+                    && kind == benilla_protocol::SpeedKind::Run =>
+            {
+                if self
+                    .expected_run_speed
+                    .is_some_and(|wanted| phases::speed_matches(wanted, speed))
+                    && self.speed_ack_seen
                 {
-                    if self
-                        .expected_run_speed
-                        .is_some_and(|wanted| phases::speed_matches(wanted, speed))
-                        && self.speed_ack_seen
-                    {
-                        ensure!(
-                            !self.speed_above_floor
-                                || self
-                                    .relays
-                                    .last()
-                                    .is_some_and(|relay| relay.pose[2] > self.floor_z + 2.),
-                            "observer speed ACK relay did not preserve airborne pose"
-                        );
-                        self.expected_run_speed = None;
-                        self.evidence.write(json!({"event":"run-speed-observer-confirmed","speed":speed,"guid":guid,"pose":self.relays.last().map(|r|r.pose)}))?;
-                    }
+                    ensure!(
+                        !self.speed_above_floor
+                            || self
+                                .relays
+                                .last()
+                                .is_some_and(|relay| relay.pose[2] > self.floor_z + 2.),
+                        "observer speed ACK relay did not preserve airborne pose"
+                    );
+                    self.expected_run_speed = None;
+                    self.evidence.write(json!({"event":"run-speed-observer-confirmed","speed":speed,"guid":guid,"pose":self.relays.last().map(|r|r.pose)}))?;
                 }
-                SessionEvent::MoveMode {
+            }
+            SessionEvent::MoveMode {
+                guid,
+                counter,
+                mode,
+                apply,
+            } if guid == p.guid => {
+                ensure!(
+                    p.entry.is_claimed(),
+                    "mode ACK before post-entry mover claim"
+                );
+                p.writer.move_mode_ack(
                     guid,
                     counter,
                     mode,
                     apply,
-                } if guid == p.guid => {
-                    ensure!(
-                        p.entry.is_claimed(),
-                        "mode ACK before post-entry mover claim"
-                    );
-                    p.writer.move_mode_ack(
-                        guid,
-                        counter,
-                        mode,
-                        apply,
-                        if apply { mode.flag() } else { 0 },
-                        (p.pose, p.orientation),
-                    )?;
-                }
-                SessionEvent::ClientControl { mover, allow_move } => {
-                    self.evidence.write(json!({"event":"entry-client-control","side":side,"mover":mover,"allow_move":allow_move,"claimed":p.entry.is_claimed()}))?;
-                    ensure!(
-                        allow_move && mover == p.guid,
-                        "unexpected client control change"
-                    );
-                    // Initial entry is claimed only after both server facts below;
-                    // duplicate own grants cannot send a second claim.
-                }
-                SessionEvent::CinematicTriggered { .. } => p.writer.complete_cinematic()?,
-                SessionEvent::LoggedOut => {
-                    p.logged_out = true;
-                    self.evidence
-                        .write(json!({"event":"logout-complete","side":side,"guid":p.guid}))?;
-                }
-                SessionEvent::LogoutResponse { reason, .. } => {
-                    ensure!(reason == 0, "logout refused {reason}")
-                }
-                SessionEvent::KnockBack {
-                    guid,
-                    counter,
-                    launch,
-                } => {
-                    ensure!(
-                        p.entry.is_claimed(),
-                        "knockback received before post-entry mover claim"
-                    );
-                    let quad = [
-                        launch.zspeed,
-                        launch.cos_angle,
-                        launch.sin_angle,
-                        launch.xy_speed,
-                    ];
-                    ensure!(
-                        side == 0
-                            && guid == p.guid
-                            && self
-                                .expected_knockback
-                                .is_some_and(|expected| phases::launch_matches(expected, quad)),
-                        "unexpected or mismatched server knockback"
-                    );
-                    let origin = p.pose;
-                    self.knockback = Some(KnockbackReceipt {
-                        origin,
-                        launch: quad,
-                        counter,
-                        at: Instant::now(),
-                        applied: None,
-                    });
-                    self.expected_knockback = None;
-                    self.evidence.write(json!({"event":"server-knockback-received","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
-                }
-                _ => {}
+                    if apply { mode.flag() } else { 0 },
+                    (p.pose, p.orientation),
+                )?;
             }
-            if let Some(guid) = p.entry.take_claim() {
+            SessionEvent::ClientControl { mover, allow_move } => {
+                self.evidence.write(json!({"event":"entry-client-control","side":side,"mover":mover,"allow_move":allow_move,"claimed":p.entry.is_claimed()}))?;
                 ensure!(
-                    p.entered && !p.logged_out,
-                    "claim requires live verified entry"
+                    allow_move && mover == p.guid,
+                    "unexpected client control change"
                 );
-                p.writer.set_active_mover(guid)?;
-                self.evidence.write(json!({"event":"entry-active-mover-claim-sent","side":side,"guid":guid,"map":self.map,"opcode":op::CMSG_SET_ACTIVE_MOVER,"after_world_and_own_player_create":true,"server_in_world_observed":false}))?;
+                // Initial entry is claimed only after both server facts below;
+                // duplicate own grants cannot send a second claim.
             }
-            self.count()?;
+            SessionEvent::CinematicTriggered { .. } => p.writer.complete_cinematic()?,
+            SessionEvent::LoggedOut => {
+                p.logged_out = true;
+                self.evidence
+                    .write(json!({"event":"logout-complete","side":side,"guid":p.guid}))?;
+            }
+            SessionEvent::LogoutResponse { reason, .. } => {
+                ensure!(reason == 0, "logout refused {reason}")
+            }
+            SessionEvent::KnockBack {
+                guid,
+                counter,
+                launch,
+            } => {
+                ensure!(
+                    p.entry.is_claimed(),
+                    "knockback received before post-entry mover claim"
+                );
+                let quad = [
+                    launch.zspeed,
+                    launch.cos_angle,
+                    launch.sin_angle,
+                    launch.xy_speed,
+                ];
+                ensure!(
+                    side == 0
+                        && guid == p.guid
+                        && self
+                            .expected_knockback
+                            .is_some_and(|expected| phases::launch_matches(expected, quad)),
+                    "unexpected or mismatched server knockback"
+                );
+                let origin = p.pose;
+                self.knockback = Some(KnockbackReceipt {
+                    origin,
+                    launch: quad,
+                    counter,
+                    at: Instant::now(),
+                    applied: None,
+                });
+                self.expected_knockback = None;
+                self.evidence.write(json!({"event":"server-knockback-received","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
+            }
+            _ => {}
         }
+        if let Some(guid) = p.entry.take_claim() {
+            ensure!(
+                p.entered && !p.logged_out,
+                "claim requires live verified entry"
+            );
+            p.writer.set_active_mover(guid)?;
+            self.evidence.write(json!({"event":"entry-active-mover-claim-sent","side":side,"guid":guid,"map":self.map,"opcode":op::CMSG_SET_ACTIVE_MOVER,"after_world_and_own_player_create":true,"server_in_world_observed":false}))?;
+        }
+        self.count()?;
+        Ok(())
+    }
+    fn await_relay(&mut self, window: &RelayWindow, case: &str) -> Result<()> {
+        self.pump_until(
+            window.deadline.saturating_duration_since(Instant::now()),
+            Some(window),
+        )?;
+        ensure!(self.relays.iter().any(|relay| window.accepts(relay)), "no exact positive relay for {case}; observer_visibility={:?}; bounded observation only, not a native refusal diagnosis", self.observer_coverage.visible());
+        self.evidence.write(json!({"event":"exact-relay-window-complete","case":case,"elapsed_ms":window.sent_at.elapsed().as_millis(),"max_ms":window.deadline.duration_since(window.sent_at).as_millis(),"opcode":window.target.opcode}))?;
+        Ok(())
+    }
+    fn begin_negative(&mut self, duration: Duration) -> Result<u64> {
+        ensure!(
+            self.peers.len() == 2,
+            "negative observation requires ordinary observer"
+        );
+        let epoch = self.observer_coverage.begin(Instant::now(), duration)?;
+        self.evidence.write(json!({"event":"negative-coverage-start","loss_epoch":epoch,"max_ms":duration.as_millis()}))?;
+        Ok(epoch)
+    }
+    fn finish_negative(&mut self, epoch: u64) -> Result<()> {
+        self.observer_coverage.finish(epoch)?;
+        self.evidence
+            .write(json!({"event":"negative-coverage-complete","unchanged_loss_epoch":epoch}))?;
         Ok(())
     }
     fn send_knock_ack(
@@ -1070,7 +1207,10 @@ impl Run {
         if let Some(probe) = probe {
             // Retain this across every clear/window until logout: a delayed
             // rejected ACK at the old baseline must never become positive proof.
-            self.invalid_ack_baseline = Some(baseline);
+            self.forbidden_ack_relays.push(ForbiddenRelay {
+                pose: baseline,
+                opcode: Some(op::MSG_MOVE_KNOCK_BACK),
+            });
             let terrain = self.terrain.as_ref().context("survey missing")?;
             origin = probe.origin(baseline, terrain)?;
             // These intentionally malformed client responses use the actual issued
@@ -1082,9 +1222,19 @@ impl Run {
                     launch: q,
                     pose: pos,
                 } = trial;
+                let epoch = self.begin_negative(Duration::from_millis(500))?;
+                self.forbidden_ack_relays.push(ForbiddenRelay {
+                    pose: pos,
+                    opcode: if distance(pos, baseline) < 0.1 {
+                        Some(op::MSG_MOVE_KNOCK_BACK)
+                    } else {
+                        None
+                    },
+                });
                 self.relays.clear();
                 self.send_knock_ack(c, q, pos, case)?;
-                self.pump(Duration::from_millis(200))?;
+                self.pump(Duration::from_millis(500))?;
+                self.finish_negative(epoch)?;
                 ensure!(self.relays.is_empty(), "invalid ACK relayed: {case}");
                 self.evidence.write(json!({"event":"knockback-ack-refusal-observed","case":case,"native_reason_requires_operator_logs":true}))?;
             }
@@ -1093,6 +1243,7 @@ impl Run {
             // ordinary policy, preserving the same receipt for a subsequent ACK.
             self.relays.clear();
             let p = &mut self.peers[0];
+            let started = Instant::now();
             p.writer.send_movement(
                 op::MSG_MOVE_START_FORWARD,
                 1,
@@ -1103,10 +1254,19 @@ impl Run {
                 None,
                 None,
             )?;
-            let started = Instant::now();
             self.count()?;
             self.evidence.write(json!({"event":"moving-ack-ordinary-start","pose":baseline,"requested_delay_ms":probe.delay_ms,"ack_origin":origin}))?;
             self.pump(Duration::from_millis(probe.delay_ms))?;
+            let window = RelayWindow::new(
+                RelayTarget {
+                    pose: baseline,
+                    flags: 1,
+                    opcode: op::MSG_MOVE_START_FORWARD,
+                },
+                started,
+                Duration::from_millis(1000),
+            );
+            self.await_relay(&window, "ordinary-pending-receipt-start")?;
             ensure!(
                 ordinary_start_barrier(&self.relays, baseline),
                 "ordinary pending-receipt movement was not relayed"
@@ -1121,22 +1281,46 @@ impl Run {
         receipt.applied = Some(applied);
         self.evidence.write(json!({"event":"server-knockback-ack-sent","counter":counter,"launch":quad,"origin":origin,"issue_age_ms":receipt.at.elapsed().as_millis(),"trajectory_clock":"matching-ACK write; absolute expiry remains initial native receipt"}))?;
         if probe.is_some() {
-            self.pump(Duration::from_millis(200))?;
-            ensure!(
-                self.relays.iter().any(|r| r.flags == 8192
-                    && r.verb == benilla_protocol::messages::RelayVerb::Pose
-                    && distance(r.pose, origin) < 0.1),
-                "matching first ACK not relayed"
-            );
+            self.await_relay(
+                &RelayWindow::new(
+                    RelayTarget {
+                        pose: origin,
+                        flags: 8192,
+                        opcode: op::MSG_MOVE_KNOCK_BACK,
+                    },
+                    applied,
+                    Duration::from_millis(1000),
+                ),
+                "matching-first-ack",
+            )?;
             self.peers[0].pose = origin;
             self.evidence
                 .write(json!({"event":"matching-first-ack-observer-confirmed","origin":origin}))?;
-            self.relays.clear();
-            self.send_knock_ack(counter, quad, origin, "one-shot-replay")?;
-            self.pump(Duration::from_millis(200))?;
-            ensure!(self.relays.is_empty(), "one-shot ACK replay relayed");
-            self.evidence.write(json!({"event":"knockback-ack-refusal-observed","case":"one-shot-replay","native_reason_requires_operator_logs":true}))?;
         }
+        Ok(())
+    }
+    fn replay_knock_ack(&mut self) -> Result<()> {
+        let epoch = self.begin_negative(Duration::from_millis(500))?;
+        let receipt = self
+            .knockback
+            .as_ref()
+            .context("native receipt missing for replay")?;
+        let (counter, quad, origin) = (receipt.counter, receipt.launch, receipt.origin);
+        self.forbidden_ack_relays.push(ForbiddenRelay {
+            pose: origin,
+            opcode: Some(op::MSG_MOVE_KNOCK_BACK),
+        });
+        self.relays.clear();
+        self.send_knock_ack(
+            counter,
+            quad,
+            origin,
+            "one-shot-replay-after-airborne-positives",
+        )?;
+        self.pump(Duration::from_millis(500))?;
+        self.finish_negative(epoch)?;
+        ensure!(self.relays.is_empty(), "one-shot ACK replay relayed");
+        self.evidence.write(json!({"event":"knockback-ack-refusal-observed","case":"one-shot-replay-after-airborne-positives","persistent_raw_opcode_guard":true,"native_reason_requires_operator_logs":true}))?;
         Ok(())
     }
     fn step(&mut self, f: &Fixture, s: &Step) -> Result<()> {
@@ -1231,12 +1415,12 @@ impl Run {
                 .context("actual knockback receipt missing")?;
             let elapsed = kb.flight_ms()?;
             pos = phases::ballistic_position(kb.origin, kb.launch, elapsed as f64 / 1000.)?;
-            pos[2] = pos[2].max(
-                self.terrain
-                    .as_ref()
-                    .context("terrain missing")?
-                    .height(pos[0], pos[1])?,
-            );
+            let measured_floor = self
+                .terrain
+                .as_ref()
+                .context("terrain missing")?
+                .height(pos[0], pos[1])?;
+            ensure!(pos[2] > measured_floor + 0.1, "ballistic sample no longer airborne; no clock or ground clamp may invent an airborne positive");
             u32::try_from(elapsed)?
         } else if s.fall_from_teleport {
             let elapsed = self.teleport.as_ref().unwrap().at.elapsed();
@@ -1253,6 +1437,11 @@ impl Run {
                 .height(pos[0], pos[1])?;
         }
         self.relays.clear();
+        let negative_epoch = if s.accept {
+            None
+        } else {
+            Some(self.begin_negative(Duration::from_millis(s.observe_ms.max(500)))?)
+        };
         if !s.accept {
             self.forbidden.push((pos, s.clear_flags));
         }
@@ -1278,6 +1467,7 @@ impl Run {
         });
         self.evidence.write(json!({"event":"send","case":s.name,"opcode":s.opcode,"flags":s.flags,"pose":pos,"expected_accept":s.accept,"clear_flags":s.clear_flags}))?;
         let p = &mut self.peers[0];
+        let sent_at = Instant::now();
         p.writer.send_movement(
             s.opcode,
             s.flags,
@@ -1289,17 +1479,32 @@ impl Run {
             transport,
         )?;
         self.count()?;
-        self.pump(Duration::from_millis(s.observe_ms))?;
         if s.accept {
-            ensure!(
-                self.relays.iter().any(|r| distance(r.pose, pos) < 0.1),
-                "no positive relay for {}",
-                s.name
-            );
+            self.await_relay(
+                &RelayWindow::new(
+                    RelayTarget {
+                        pose: pos,
+                        flags: s.flags,
+                        opcode: s.opcode,
+                    },
+                    sent_at,
+                    Duration::from_millis(relay::positive_limit_ms(
+                        s.observe_ms,
+                        s.flags & 8192 != 0,
+                    )),
+                ),
+                &s.name,
+            )?;
             self.peers[0].pose = pos;
+        } else {
+            self.pump(Duration::from_millis(s.observe_ms.max(500)))?;
+            self.finish_negative(negative_epoch.context("negative coverage token missing")?)?;
         }
         self.evidence.write(json!({"event":"step-complete","case":s.name,"positive_relay":s.accept,
             "note":if s.accept {"accepted by world"} else if s.clear_flags!=0 {"no prohibited capability relay; corrected ground pose permitted; recovery and saved pose still required"} else {"no forbidden relay; next recovery and saved pose still required"}}))?;
+        if s.replay_after_ballistic {
+            self.replay_knock_ack()?;
+        }
         Ok(())
     }
 }
@@ -1450,7 +1655,8 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         evidence,
         forbidden: vec![],
         relays: vec![],
-        invalid_ack_baseline: None,
+        forbidden_ack_relays: vec![],
+        observer_coverage: Default::default(),
         sent: 0,
         map: f.map,
         expected_teleport: None,
@@ -1579,11 +1785,15 @@ mod tests {
             pose: baseline,
             flags: 8192,
             verb: RelayVerb::Pose,
+            opcode: op::MSG_MOVE_KNOCK_BACK,
+            received_at: Instant::now(),
         };
         let ordinary = SeenRelay {
             pose: baseline,
             flags: 1,
             verb: RelayVerb::Pose,
+            opcode: op::MSG_MOVE_START_FORWARD,
+            received_at: Instant::now(),
         };
         assert!(!ordinary_start_barrier(&[late_ack], baseline));
         assert!(invalid_ack_relay(&late_ack, baseline));
@@ -1849,8 +2059,16 @@ mod tests {
         f.steps[2].wait_knockback_age_ms = Some(61000);
         f.terrain.as_mut().unwrap().ny = 13;
         f.terrain.as_mut().unwrap().heights = vec![3.; 35 * 13];
+        f.steps.insert(2, serde_json::from_value(json!({"name":"second-native-airborne-positive","delay_ms":100,"opcode":238,"flags":8192,"offset":[0,0,0],"accept":true,"relative_to_knockback":true,"ballistic_from_knockback":true,"replay_after_ballistic":true})).unwrap());
         f.steps[1].await_knockback.as_mut().unwrap().first_ack_probe =
             Some(phases::FirstAckProbe { delay_ms: 499 });
+        validate(&f).unwrap();
+        f.steps[2].replay_after_ballistic = false;
+        assert!(validate(&f).is_err());
+        f.steps[1].replay_after_ballistic = true;
+        assert!(validate(&f).is_err()); // One airborne sample cannot authorize replay phase.
+        f.steps[1].replay_after_ballistic = false;
+        f.steps[2].replay_after_ballistic = true;
         validate(&f).unwrap();
         f.steps[1]
             .await_knockback
