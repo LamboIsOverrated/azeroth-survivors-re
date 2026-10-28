@@ -1,0 +1,189 @@
+--- a/src/game/Anticheat/module/libanticheat.cpp
++++ b/src/game/Anticheat/module/libanticheat.cpp
+@@ -666,7 +666,7 @@
+ #endif
+ 
+ SessionAnticheat::SessionAnticheat(WorldSession *session, const BigNumber &K) :
+-    _session(session), _warden(CreateWarden(session, K, this)), _inWorld(false), _worldEnterTime(0), _tickTimer(0),
++    _session(session), _warden(sAnticheatConfig.getConfig(CONFIG_BOOL_AC_WARDEN_ENABLED) ? CreateWarden(session, K, this) : nullptr), _inWorld(false), _worldEnterTime(0), _tickTimer(0),
+     _cheatsReported(0), _kickTimer(0), _banTimer(0), _banAccount(false), _banIP(false), _fingerprint(0),
+     _antispam(sAntispamMgr.GetSession(session->GetAccountId()))
+ {
+@@ -767,7 +767,8 @@
+     if (!sAnticheatConfig.EnableAnticheat())
+         return;
+ 
+-    _warden->Update(diff);
++    if (_warden)
++        _warden->Update(diff);
+ 
+     if (_tickTimer > diff)
+         _tickTimer -= diff;
+@@ -788,7 +789,10 @@
+ 
+ void SessionAnticheat::SendCharEnum(WorldPacket &&packet)
+ {
+-    _warden->SetCharEnumPacket(std::move(packet));
++    if (_warden)
++        _warden->SetCharEnumPacket(std::move(packet));
++    else
++        _session->SendPacket(packet, true);
+ }
+ 
+ bool SessionAnticheat::IsSilenced() const
+@@ -838,7 +842,8 @@
+         handler->PSendSysMessage("OS: %s Build: %u Fingerprint: 0x%x Local IP: %s",
+             _session->GetOS() == CLIENT_OS_WIN ? "Win" : "Mac", _session->GetGameBuild(), _fingerprint, _session->GetLocalAddress().c_str());
+ 
+-    _warden->SendPlayerInfo(handler, includeFingerprint);
++    if (_warden)
++        _warden->SendPlayerInfo(handler, includeFingerprint);
+ }
+ 
+ void SessionAnticheat::SendCheatInfo(ChatHandler *handler) const
+@@ -940,11 +945,14 @@
+     if (!_movementData)
+         return false;
+ 
+-    if (_movementData->HandleAnticheatTests(mi, _session, packet))
+-        return true;
+-
+-    if (_movementData->CheckTeleport(packet.GetOpcode(), mi))
+-        return true;
++    if (!_movementData->CheckBrowserMovement(mi))
++        return false;
++
++    if (!_movementData->HandleAnticheatTests(mi, _session, packet))
++        return false;
++
++    if (!_movementData->CheckTeleport(packet.GetOpcode(), mi))
++        return false;
+ 
+     // if the above checks do not object to the message, update some other status...
+     if (mi.HasMovementFlag(MOVEFLAG_ONTRANSPORT))
+@@ -955,7 +963,7 @@
+             _movementData->OnTransport(reinterpret_cast<Player *>(mover), mi.GetTransportGuid());
+     }
+ 
+-    return false;
++    return true;
+ }
+ 
+ void SessionAnticheat::TimeSkipped(const ObjectGuid &mover, uint32 ms)
+@@ -1011,7 +1019,10 @@
+ 
+ void SessionAnticheat::WardenPacket(WorldPacket &packet)
+ {
+-    _warden->HandlePacket(packet);
++    if (_warden)
++        _warden->HandlePacket(packet);
++    else
++        _session->KickPlayer(); // Unsupported unsolicited Warden traffic is never interpreted.
+ }
+ 
+ void SessionAnticheat::AutoReply(const std::string &msg)
+--- a/src/game/Anticheat/module/Movement/movement.cpp
++++ b/src/game/Anticheat/module/Movement/movement.cpp
+@@ -915,14 +915,6 @@
+ 
+ bool Movement::IsTeleportAllowed(MovementInfo const& movementInfo, float& distance)
+ {
+-    // check valid source coordinates
+-    if (_me->GetPositionX() == 0.0f || _me->GetPositionY() == 0.0f || _me->GetPositionZ() == 0.0f)
+-        return true;
+-
+-    // check valid destination coordinates
+-    if (movementInfo.GetPos().x == 0.0f || movementInfo.GetPos().y == 0.0f || movementInfo.GetPos().z == 0.0f)
+-        return true;
+-
+     // if knockbacked
+     if (_me->IsLaunched())
+         return true;
+@@ -972,6 +964,60 @@
+     }
+ 
+     return movementInfo.fallTime != 0 || movementInfo.jump.zspeed != 0.0f;
++}
++
++bool Movement::CheckBrowserMovement(MovementInfo const& mi)
++{
++    if (_me->GetSession()->GetSecurity() != SEC_PLAYER || !_me->IsSelfMover())
++        return true;
++
++    auto reject = [this](char const* reason)
++    {
++        _anticheat->RecordCheatInternal(CHEAT_TYPE_TELEPORT, "Browser movement rejected: %s", reason);
++        return false;
++    };
++    if (!std::isfinite(mi.pos.x) || !std::isfinite(mi.pos.y) || !std::isfinite(mi.pos.z))
++        return reject("nonfinite-position");
++
++    // These are server-owned states, never exemptions based on the incoming flags.
++    const bool exempt = _justTeleported || _me->IsBeingTeleported() || _me->IsTaxiFlying() ||
++        _me->IsLaunched() || _me->GetTransport() || !_me->movespline->Finalized();
++    const uint32 now = WorldTimer::getMSTime();
++    const double speed = _me->hasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_ROOT) ? 0.0 : std::max<double>(
++        _me->GetSpeed(MOVE_RUN), std::max(_me->GetSpeed(MOVE_SWIM), _me->GetSpeed(MOVE_WALK)));
++    const double distance = std::hypot(double(mi.pos.x) - _me->GetPositionX(),
++                                       double(mi.pos.y) - _me->GetPositionY());
++    if (!exempt && (mi.moveFlags & (MOVEFLAG_FLYING | MOVEFLAG_CAN_FLY | MOVEFLAG_LEVITATING)))
++        return reject("unauthorized-flight-flags");
++    if (!_browserBudget.Accept(now, distance, speed, exempt))
++        return reject("server-time-distance-budget");
++    if (exempt)
++        return _browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), false, true,
++                                  [](double) { return 0.0; });
++
++    uint32 removeFlags = 0;
++    VerifyMovementFlags(mi.moveFlags, removeFlags, true);
++    if (removeFlags)
++        return reject("unauthorized-movement-flags");
++    if (!_me->GetMap()->IsInLineOfSight(_me->GetPositionX(), _me->GetPositionY(),
++            _me->GetPositionZ() + 0.5f, mi.pos.x, mi.pos.y, mi.pos.z + 0.5f, false))
++        return reject("movement-through-map-collision");
++
++    float floor = _me->GetMap()->GetHeight(mi.pos.x, mi.pos.y, mi.pos.z);
++    const bool water = _me->GetTerrain()->IsInWater(mi.pos.x, mi.pos.y, mi.pos.z);
++    if (_me->HasAuraType(SPELL_AURA_WATER_WALK) || _me->HasAuraType(SPELL_AURA_GHOST))
++        floor = std::max(floor, _me->GetTerrain()->GetWaterLevel(mi.pos.x, mi.pos.y, mi.pos.z));
++    const bool surface = water || (std::isfinite(floor) && floor > -50000.f &&
++                                  std::fabs(mi.pos.z - floor) <= 1.5f);
++    if (!water && std::isfinite(floor) && floor > -50000.f && mi.pos.z < floor - 2.f)
++        return reject("below-map-surface");
++    const bool slowFall = _me->HasAuraType(SPELL_AURA_FEATHER_FALL);
++    if (!_browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), surface, false,
++            [slowFall](double seconds) {
++                return ::Movement::computeFallElevation(float(seconds), slowFall, -7.955547f);
++            }))
++        return reject("airborne-gravity-envelope");
++    return true;
+ }
+ 
+ bool Movement::CheckTeleport(uint16 opcode, MovementInfo& movementInfo)
+--- a/src/game/Anticheat/module/Movement/movement.hpp
++++ b/src/game/Anticheat/module/Movement/movement.hpp
+@@ -12,6 +12,7 @@
+ #include "Entities/Unit.h"
+ #include "../libanticheat.hpp"
+ #include "../cyclic.hpp"
++#include "BrowserMovementBudget.h"
+ 
+ #include <vector>
+ #include <map>
+@@ -39,6 +40,8 @@
+         Player * const _me;
+ 
+         float _totalDistanceTraveled;
++        RealmBrowser::MovementBudget _browserBudget;
++        RealmBrowser::AirborneCeiling _browserAir;
+ 
+         // true when the previous tick of anticheat tests was aborted due to the session controlling a unit other than its own player (mind control)
+         bool _wasMovingOther;
+@@ -138,6 +141,7 @@
+         void OnExplore(AreaTableEntry const* p);
+         void OnTransport(Player* plMover, ObjectGuid transportGuid);
+ 
++        bool CheckBrowserMovement(MovementInfo const& movementInfo);
+         bool CheckTeleport(uint16 opcode, MovementInfo& movementInfo);
+ 
+         // commands

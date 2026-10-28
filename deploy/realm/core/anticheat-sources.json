@@ -1,0 +1,19 @@
+{
+  "revision": "de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "files": {
+    "src/game/Anticheat/module/libanticheat.cpp": {
+      "before": "ab480c74bd26a970585f723b0540e8135ed7f25ed00a00bd730d27f30f1f4e0e",
+      "after": "047e5d1862e02b76821744f949b5ad294bb42ce76b965f8c16d722b4c9c867e9"
+    },
+    "src/game/Anticheat/module/Movement/movement.cpp": {
+      "before": "6ddeb246648d3c003275647440fb02e7b8d010fe4320873852062908c0a96014",
+      "after": "132d14180611ba53b5fb78162dd8ad78370bb60bc3f3df263b9e22cf80a94833"
+    },
+    "src/game/Anticheat/module/Movement/movement.hpp": {
+      "before": "02863c6c69e7341296041a63bf845233de61daecc231b5eb1f27e1e5cd300617",
+      "after": "c90808b66996e75ae1f417eb293f4f2cecd39d6826d5afc58b1e42261f4737f6"
+    }
+  },
+  "patch_sha256": "bd52ac3c79a585b1ec90094d41a8f17f3a17e1924865dc83d9aa44709ad45587",
+  "header_sha256": "743892cbd22ff5ceebcf1728009322ef525f7ced52b10940dea43da14ddcec63"
+}

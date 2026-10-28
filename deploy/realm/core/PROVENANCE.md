@@ -84,3 +84,25 @@ SQL migration remains manual, TEST enablement defaults to zero, and no LIVE
 settlement setting is forwarded. Full source/image build and real database fault
 acceptance are mandatory before deployment; portable configuration tests alone
 do not confirm the new image has been built or is safe to activate.
+
+## Disabled browser movement carry
+
+`anticheat-sources.json` pins the exact before/after hashes of the original core's
+`libanticheat.cpp`, `Movement/movement.cpp` and `Movement/movement.hpp` at the core
+revision above. `browser-anticheat.patch` is the reviewable source carry and
+`BrowserMovementBudget.h` is original server-clock budget/airborne-ceiling code.
+The apply tool verifies both source and carry content and accepts the separate
+bridge's earlier modifications only because they touch disjoint files.
+
+Primary mechanisms were checked directly in the exact pinned
+[anticheat dispatcher](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/Anticheat/module/libanticheat.cpp),
+[Warden constructor](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/Anticheat/module/Warden/warden.cpp),
+[movement checks](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/Anticheat/module/Movement/movement.cpp),
+[configuration parser](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/Anticheat/module/config.cpp)
+and [server movement handler](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/MotionGenerators/MovementHandler.cpp).
+The stock Warden switch is parsed without a consumer; the stock movement dispatcher
+returns before teleport validation on success; speed excess is accumulated without
+an enforcement consumer. The carry does not attribute its new movement policy to
+stock CMaNGOS behavior. Full image compilation and isolated actual-world acceptance
+are independent release gates. Activation stays explicitly disabled until those
+gates pass; no deployment or real-world protection is established by source tests.

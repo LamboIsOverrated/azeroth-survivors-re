@@ -28,6 +28,9 @@ Required environment:
   enablement is accepted only when both compiled bot capabilities are `0`.
   Only this validated TEST switch is forwarded to the game; root database,
   SOAP operator and LIVE settlement variables remain absent from game children.
+- `CORE_BROWSER_MOVEMENT_COMPILED`: image metadata, exactly `0` or `1`, default
+  `0`. `REALM_BROWSER_MOVEMENT_ENABLE` is a separate strict `0`/`1` activation
+  gate, default `0`; enabling it on the ordinary unpatched image fails closed.
 
 The web service must use the same SOAP credentials against private port 7878,
 and `realmweb` plus `DB_REALMWEB_PASSWORD` for read-only auth/character queries.
@@ -163,6 +166,62 @@ A future reviewed bridge image has a separate repository-root build context:
 ```sh
 docker build -f deploy/realm/core/Dockerfile.bridge -t realm-core-bridge:test .
 ```
+
+### Browser movement carry: activation remains disabled
+
+The same future image applies `browser-anticheat.patch` after the disjoint bridge
+carry. `apply_anticheat.py` requires the exact core revision and hashes of all
+three affected source files, verifies patch/header hashes, checks applicability,
+and verifies the resulting source hashes. It never touches SQL or a service.
+The complete patched source, carry, header, apply tool and build checks accompany
+the future binary image. The ordinary pinned companion image has capability `0`.
+
+The pinned stock core parses `Warden.Enable` but does not use it: constructing an
+enabled anticheat session unconditionally constructs Warden, sends its module,
+and delays character enumeration for fingerprinting. The carry makes Warden
+optional, guards every Warden call, and directly sends character enumeration
+when it is disabled. Unsolicited Warden traffic is rejected. It also makes all
+movement validators mandatory in sequence and removes the stock blanket
+zero-coordinate teleport exemption.
+
+The movement policy consumes horizontal distance from a per-player budget refilled
+only by the server's monotonic receipt clock and authoritative run/swim/walk
+speeds. Its burst allowance is two seconds of movement plus one yard; it never
+uses a submitted client timestamp. Server timer wrap is supported. Root/stun state
+comes from the server's unit state. Resets/exemptions come from server teleport,
+taxi, knockback, actual transport and spline state, never incoming movement flags.
+It rejects unpermitted flight/movement flags, map collision crossings and positions
+below the server's map surface. An airborne ceiling uses the actual core fall
+function and authoritative feather-fall aura, with two yards of tolerance; surface
+contact is checked against server map/water data. Existing teleport checks also
+remain mandatory. Rejections leave character position unchanged and record bounded
+reason notifications through the existing anticheat counters/log database.
+
+Enablement generates `Enable=1`, `Warden.Enable=0`, speed diagnostics and log-only
+heuristic response masks. No generated heuristic action bans, silences or kicks.
+Packet refusal is implemented in the source carry, rather than inferred from a
+log threshold. The image declares its capability but leaves activation at `0`.
+Do not enable it until the combined image build and isolated real-client movement
+acceptance pass. Model/dispatch tests cannot establish real map or browser fidelity.
+
+Portable checks cover strict activation gates, source/hash/path rejection and the
+unchanged default image. The C++ executable exercises normal movement, bursts,
+tenfold speed, timer wrap, root, server teleport, finite values, jumping and hover
+refusal. `check_anticheat_dispatch.py SOURCE` extracts and compiles the actual
+patched dispatch/character-enumeration/Warden-packet methods with narrow engine
+boundary fakes. It checks validator order, refusal short-circuiting and Warden
+absence/presence; it fails against the original pinned movement dispatcher.
+The Docker builder runs both checks before compiling the full core.
+
+The isolated world drill must use disposable restored schemas and ordinary test
+accounts, with no unattended combat. Check run/walk/backpedal/strafe/turn/jump,
+stairs/doors/caves, swim, ledges/falling, slow fall, mount/speed changes, root and
+server movement, taxi/transports/lifts, blink/hearth/resurrection and server-issued
+teleports. Verify forged clock changes, high-rate short steps, long/zero-axis
+teleports, flight flags, air hovering, large Z and nonfinite positions cannot
+move the authoritative character or create bans. Confirm recovery after a refused
+packet and measure latency/burst tolerance. Actual maps, transport ownership,
+collision and aura paths require this evidence before public PvP can be released.
 
 Its Dockerfile-specific allowlist includes only named source, patch and metadata
 files; the repository root `.dockerignore` is untouched. The build checks the

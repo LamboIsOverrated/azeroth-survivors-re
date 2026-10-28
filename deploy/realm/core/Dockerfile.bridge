@@ -2,7 +2,7 @@
 # Future reviewed TEST carry only. Build from REPOSITORY ROOT, not core/.
 FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake git ca-certificates libboost-all-dev \
+      build-essential cmake git ca-certificates python3 libboost-all-dev \
       libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/src
@@ -12,6 +12,11 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/cmangos/mangos
 COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json /opt/bridge/core/
 COPY deploy/realm/bridge/tools/apply-patch.mjs /opt/bridge/tools/apply-patch.mjs
 RUN node /opt/bridge/tools/apply-patch.mjs /opt/src/mangos-classic --apply
+COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/anticheat/
+RUN python3 /opt/anticheat/apply_anticheat.py /opt/src/mangos-classic --apply \
+    && g++ -std=c++17 -Wall -Wextra -Werror /opt/anticheat/movement_budget_test.cpp -o /tmp/movement-budget-test \
+    && /tmp/movement-budget-test \
+    && python3 /opt/anticheat/check_anticheat_dispatch.py /opt/src/mangos-classic
 RUN cmake -S mangos-classic -B /opt/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/mangos \
       -DBUILD_GAME_SERVER=ON -DBUILD_LOGIN_SERVER=ON -DBUILD_EXTRACTORS=OFF \
       -DBUILD_PLAYERBOTS=OFF -DBUILD_DEPRECATED_PLAYERBOT=OFF -DBUILD_AHBOT=OFF -DPCH=ON \
@@ -31,10 +36,11 @@ COPY deploy/realm/core/runtime.py deploy/realm/core/smoke_runtime.py deploy/real
 COPY deploy/realm/core/upstreams.env deploy/realm/core/PROVENANCE.md /opt/railway-core/
 # Corresponding patched GPL source and build instructions accompany the binaries.
 COPY --from=build /tmp/cmangos-bridge-source.tar.gz /opt/railway-core/source/cmangos-bridge-source.tar.gz
-COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json deploy/realm/bridge/core/001-world-bridge.sql /opt/railway-core/source/bridge/core/
+COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json deploy/realm/bridge/core/001-world-bridge.sql deploy/realm/bridge/core/002-missing-character-reason.sql /opt/railway-core/source/bridge/core/
 COPY deploy/realm/bridge/tools/apply-patch.mjs /opt/railway-core/source/bridge/tools/
 COPY deploy/realm/core/Dockerfile.bridge /opt/railway-core/source/Dockerfile.bridge
-ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 REALM_BRIDGE_TEST_ENABLE=0
+COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/railway-core/source/anticheat/
+ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 REALM_BRIDGE_TEST_ENABLE=0 CORE_BROWSER_MOVEMENT_COMPILED=1 REALM_BROWSER_MOVEMENT_ENABLE=0
 LABEL dev.wenilla.core.revision="de8f72993b9e1faa1bf92dd5505f3daec5cea3ce" \
       dev.wenilla.bridge.phase="TEST-disabled" \
       dev.wenilla.bridge.source="https://github.com/LamboIsOverrated/azeroth-survivors-re/tree/feat/browser-pvp-mmo/deploy/realm/bridge" \

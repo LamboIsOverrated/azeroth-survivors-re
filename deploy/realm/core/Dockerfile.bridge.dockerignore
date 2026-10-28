@@ -10,10 +10,17 @@
 !deploy/realm/core/repair_client.py
 !deploy/realm/core/upstreams.env
 !deploy/realm/core/PROVENANCE.md
+!deploy/realm/core/apply_anticheat.py
+!deploy/realm/core/browser-anticheat.patch
+!deploy/realm/core/anticheat-sources.json
+!deploy/realm/core/BrowserMovementBudget.h
+!deploy/realm/core/movement_budget_test.cpp
+!deploy/realm/core/check_anticheat_dispatch.py
 !deploy/realm/bridge/
 !deploy/realm/bridge/core/
 !deploy/realm/bridge/core/world-bridge.patch
 !deploy/realm/bridge/core/pinned-sources.json
 !deploy/realm/bridge/core/001-world-bridge.sql
+!deploy/realm/bridge/core/002-missing-character-reason.sql
 !deploy/realm/bridge/tools/
 !deploy/realm/bridge/tools/apply-patch.mjs
