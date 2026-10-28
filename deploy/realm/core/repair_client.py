@@ -15,15 +15,30 @@ import tempfile
 from adt_repair import verified_prefix
 
 KNOWN = dict(
+    source_version='vanilla-5875-enUS-audited-candidate-20261028-v1',
     entry='World/Maps/Kalimdor/Kalimdor_33_49.adt',
     prefix_size=393216, restored_size=1196952,
     prefix_sha256='7b1898d8709b0084f55f339f4293397c19a70fb5267087017de8b67e0a1472f6',
     restored_sha256='9e7809c00fab5177e89b3597cb784bdb9fc1dc07abc66b2ffcaccfdc1d9b0611',
     archives={
+        'backup.MPQ': dict(size=6341628, sha256='5f95175d6046827bbd46ec207a78032a9279fbcf4163c308fb73655f537ff26a'),
+        'base.MPQ': dict(size=11202638, sha256='8664981b6ae6f43ad2c2a3670e7b92fb6765da200b427a7e57e03c5cb5645241'),
+        'dbc.MPQ': dict(size=3875834, sha256='a37649169842347ae37a270f49b005a95e184f5ba3d2c1d2d16f37ea2bb902e4'),
+        'fonts.MPQ': dict(size=1284223, sha256='0e8a8121f40ff27dad6beba63a83b708c753762c898420a674a74987a6e31522'),
+        'interface.MPQ': dict(size=69655328, sha256='9ac598e8c1595f0c50276860936956e6196ef5f041de13db79a5d75b6be99105'),
+        'misc.MPQ': dict(size=6084832, sha256='59c4138eefb00f6e640667cd7d16decaec4b2048ee17dc4f58195bd93d7c6a60'),
+        'model.MPQ': dict(size=190911084, sha256='d8f168e2d346a113076e5b100296cc8f77cc74db2f85e16d25052bc5fc59b639'),
         'patch.MPQ': dict(size=2055856542, sha256='5fe80699e8d6de05a2c76bb63a523bbf53761cc1ddf528c77a755324d8476ec1'),
         'patch-2.MPQ': dict(size=9095702, sha256='d8273a13ac9ed17be5b9a4454bd7de71d48266822c1aba44ca73defad7a4593e'),
+        'sound.MPQ': dict(size=707653955, sha256='7ccbaef51dd998366d5d71b5d702caef9518e415066fb94d7c503fe07deda4cb'),
+        'speech.MPQ': dict(size=229168847, sha256='1759231dfb0427d4ad48d6cde23623df8eb3e35f8bf8b40ed2abbb89005be6dd'),
         'terrain.MPQ': dict(size=1099777804, sha256='4ca9cb8ebc40027f15168fbc2f311d4420f5c628f1327e4317087febae1aa638'),
-    })
+        'texture.MPQ': dict(size=664940439, sha256='5768dc52b2e59f6854e3c30812644af86d1834d60b2d5970860cea893c0c4c07'),
+        'wmo.MPQ': dict(size=363565077, sha256='00d40ff633cd71ab60f20833a06b18e9638132227c8c1d2bc509c905e51552ce'),
+    },
+    derived_overlay=dict(size=9597150, sha256='9f9e27a09374d1f669dfe280c1d8c0c9dd148c8d89237c6b58a701bc9e1b3c5e'))
+
+MANIFEST_VERSION = 2
 
 
 def digest(path):
@@ -32,6 +47,71 @@ def digest(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             result.update(block)
     return result.hexdigest()
+
+
+def verify_files(directory, expected, label):
+    files = [p for p in directory.rglob('*') if p.suffix.lower() == '.mpq']
+    if (len(files) != len(expected) or any(p.parent != directory or not p.is_file() for p in files)
+            or {p.name for p in files} != set(expected)):
+        raise RuntimeError(label + ' archive inventory mismatch; verification refused')
+    for name, specification in expected.items():
+        file = directory / name
+        if file.stat().st_size != specification['size'] or digest(file) != specification['sha256']:
+            raise RuntimeError(label + ' archive content mismatch: ' + name + '; verification refused')
+
+
+def repair_manifest(proof):
+    return dict(source_version=proof['source_version'], derivation_version=1,
+                entry=proof['entry'], prefix_bytes=proof['prefix_size'], declared_bytes=proof['restored_size'],
+                prefix_sha256=proof['prefix_sha256'], restored_sha256=proof['restored_sha256'],
+                restored_bytes=proof['restored_size'], original_archives=proof['archives'],
+                overlay_sha256=proof['derived_overlay']['sha256'], overlay_bytes=proof['derived_overlay']['size'],
+                validation='all original/derived MPQ SHA256s; exact prefix; complete ADT bounds; overlay round-trip')
+
+
+def write_manifest(directory, metadata):
+    marker = directory / '.client-data.json'
+    temporary = directory / '.client-data.json.partial'
+    with temporary.open('w', encoding='utf-8') as output:
+        json.dump(metadata, output, indent=2, sort_keys=True)
+        output.flush()
+        os.fsync(output.fileno())
+    temporary.replace(marker)
+
+
+def validate_manifest(metadata, expected, manifest, proof):
+    legacy = metadata.get('manifest_version') is None and metadata.get('source_version') is None
+    if not legacy and (type(metadata.get('manifest_version')) is not int
+                       or metadata['manifest_version'] != MANIFEST_VERSION
+                       or metadata.get('source_version') != proof['source_version']):
+        raise RuntimeError('Derived manifest version mismatch; verification refused')
+    rows = metadata.get('files')
+    if not isinstance(rows, list) or len(rows) != len(expected):
+        raise RuntimeError('Derived manifest inventory mismatch; verification refused')
+    names = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get('name'), str) or row['name'] not in expected:
+            raise RuntimeError('Derived manifest filename mismatch; verification refused')
+        names.append(row['name'])
+        spec = expected[row['name']]
+        if (type(row.get('size')) is not int or row['size'] != spec['size']
+                or (not legacy and row.get('sha256') != spec['sha256'])):
+            raise RuntimeError('Derived manifest content proof mismatch; verification refused')
+    if len(set(names)) != len(expected):
+        raise RuntimeError('Derived manifest duplicate filename; verification refused')
+    recorded = metadata.get('repair')
+    if not isinstance(recorded, dict):
+        raise RuntimeError('Derived repair proof missing; verification refused')
+    if legacy:
+        # Only the known previous helper format can be upgraded. All file bytes
+        # are independently checked against the source-pinned profile first.
+        keys = ('entry', 'prefix_bytes', 'declared_bytes', 'prefix_sha256',
+                'restored_sha256', 'restored_bytes', 'overlay_sha256', 'overlay_bytes')
+        if any(recorded.get(key) != manifest[key] for key in keys):
+            raise RuntimeError('Derived legacy repair proof mismatch; verification refused')
+    elif recorded != manifest:
+        raise RuntimeError('Derived repair proof mismatch; verification refused')
+    return legacy
 
 
 class MpqTool:
@@ -66,22 +146,26 @@ def repair(source, output, *, _proof=KNOWN, tool=None):
     if source == output or source in output.parents or output in source.parents:
         raise ValueError('Original and derived data directories must be separate siblings')
     tool = tool or MpqTool()
-    for name, expected in _proof['archives'].items():
-        file = source / name
-        if (not file.is_file() or file.stat().st_size != expected['size']
-                or digest(file) != expected['sha256']):
-            raise RuntimeError('Unrecognized original archive: ' + name + '; repair refused')
+    verify_files(source, _proof['archives'], 'Original')
+    expected = {name: dict(specification) for name, specification in _proof['archives'].items()}
+    expected['patch-2.MPQ'] = dict(_proof['derived_overlay'])
+    manifest = repair_manifest(_proof)
+    metadata = dict(manifest_version=MANIFEST_VERSION, source_version=_proof['source_version'],
+                    files=[dict(name=name, **expected[name]) for name in sorted(expected)], repair=manifest)
     marker = output / '.client-data.json'
     if output.exists():
         if not marker.is_file():
             raise RuntimeError('Incomplete derived directory exists; inspect it before retrying')
-        metadata = json.loads(marker.read_text())
-        manifest = metadata.get('repair', {})
-        if (manifest.get('restored_sha256') != _proof['restored_sha256']
-                or manifest.get('overlay_sha256') != digest(output / 'patch-2.MPQ')
-                or any(not (output / file['name']).is_file()
-                       or (output / file['name']).stat().st_size != file['size'] for file in metadata.get('files', []))):
-            raise RuntimeError('Derived data verification failed; repair refused')
+        try:
+            recorded = json.loads(marker.read_text())
+            if not isinstance(recorded, dict):
+                raise ValueError('not an object')
+        except (OSError, ValueError):
+            raise RuntimeError('Derived manifest unreadable; verification refused') from None
+        legacy = validate_manifest(recorded, expected, manifest, _proof)
+        verify_files(output, expected, 'Derived')
+        if legacy:
+            write_manifest(output, metadata)
         return manifest
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='repair-', dir=output.parent) as temporary:
@@ -113,13 +197,10 @@ def repair(source, output, *, _proof=KNOWN, tool=None):
         roundtrip, roundtrip_size, ok = tool.read(patch, _proof['entry'], workspace / 'roundtrip')
         if not ok or roundtrip_size != declared or roundtrip != complete:
             raise RuntimeError('Derived overlay round-trip verification failed')
-        manifest = dict(entry=_proof['entry'], prefix_bytes=len(prefix), declared_bytes=declared,
-                        prefix_sha256=_proof['prefix_sha256'], restored_sha256=_proof['restored_sha256'],
-                        restored_bytes=len(complete), original_archives=_proof['archives'],
-                        overlay_sha256=digest(patch), overlay_bytes=patch.stat().st_size,
-                        validation='audited exact archives; exact prefix; complete ADT bounds; overlay round-trip')
-        files = [dict(name=p.name, size=p.stat().st_size) for p in sorted(staged.iterdir())]
-        (staged / '.client-data.json').write_text(json.dumps(dict(files=files, repair=manifest), indent=2))
+        verify_files(staged, expected, 'Derived')
+        with patch.open('r+b') as overlay:
+            os.fsync(overlay.fileno())
+        write_manifest(staged, metadata)
         if os.name != 'nt':
             for file in originals:
                 file.chmod(0o444)

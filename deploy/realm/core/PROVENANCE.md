@@ -43,3 +43,23 @@ only that proved identical entry in a copied highest patch, and records private
 runtime manifests. Other inputs are rejected. All original files remain present
 and read-only. An audit of 2,200 patch ADTs found no second invalid entry.
 No client entry, MPQ, extracted map, or other game asset is committed or published.
+
+## Complete source identity and deterministic derived identity
+
+The original private derivation recorded SHA256s for all 14 MPQs before and
+after preserving the immutable originals. `repair_client.py` now pins that
+complete name/size/hash inventory as source version
+`vanilla-5875-enUS-audited-candidate-20261028-v1`; this identifies the measured
+candidate rather than asserting publisher authenticity. ZIP CRC validation
+remains a transport check and does not replace these pinned content hashes.
+
+On 2026-10-28, two independent fresh private scratch derivations, started at
+different times, each produced a 9,597,150-byte normalized `patch-2.MPQ` with
+SHA256 `9f9e27a09374d1f669dfe280c1d8c0c9dd148c8d89237c6b58a701bc9e1b3c5e`.
+The helper sets the restored entry timestamp to epoch zero and uses StormLib
+`smpq` 1.6-2 / `libstorm9` 9.22-1 with ZLIB compression. The other 13 derived
+MPQs must match their complete original hashes. Manifest version 2 records
+all these content identities and is verified on repeat runs and restores.
+The initial manual operator overlay's 9,597,162-byte container differs only in
+metadata and remains distinct from the reproducible normalized profile; its
+restored ADT has the same independently verified full-entry hash.

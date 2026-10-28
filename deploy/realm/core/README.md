@@ -95,12 +95,12 @@ ADTs in the two patch archives were audited; this was the sole malformed entry.
 The original unpatched extractor then completed dbc/maps and both vmap phases
 after the backed repair. Movement maps and gameplay require separate completion.
 
-`repair_client.py` accepts only the exact audited patch/patch-2/terrain SHA256s
+`repair_client.py` accepts only the exact sizes and SHA256s of all 14 audited MPQs
 and validates the exact prefix, full entry hash, all ADT chunk bounds, and a
 round trip through a copied highest-priority patch. Unknown inputs fail closed.
 It makes original MPQs read-only, hardlinks unchanged entries into a separate
 directory, copies/amends `patch-2.MPQ`, and atomically publishes the derived tree
-and `.client-data.json` containing every MPQ's name/size and the repair proof.
+and `.client-data.json` containing every MPQ's name/size/SHA256 and the repair proof.
 Original MPQ contents are never rewritten. Both extractor and browser must use
 the same derived input. The original extractor hardcodes patches through
 `patch-2.MPQ`; adding `patch-3.MPQ` does not override its input.
@@ -116,5 +116,23 @@ The web image can copy `repair_client.py` and `adt_repair.py` together, install
 the same package, and run with `--source /state/client/Data --output
 /state/client/DerivedData` after private data staging, pointing the realm's
 `CLIENT_DATA` at the derived directory. All output remains private runtime data.
-Repeated runs verify existing derived state and preserve it. Source hashes and
-entry proof are source-only metadata in the helper; no game content is in Git.
+Run the helper on every startup and after restoration, even when a size-based
+completion check succeeds. It hashes every original and derived MPQ, rejects
+missing/extra archives, duplicate/path-valued manifest filenames, changed bytes
+of the same size, and unknown manifest versions. The marker cannot authorize a
+different overlay: its expected SHA256 is pinned in source alongside all other
+file hashes. Manifest version 2 identifies source version
+`vanilla-5875-enUS-audited-candidate-20261028-v1`. Existing normalized version-1
+helper output is verified in full before only its marker is upgraded; MPQ
+contents remain untouched.
+
+The normalized patch is exactly 9,597,150 bytes with SHA256
+`9f9e27a09374d1f669dfe280c1d8c0c9dd148c8d89237c6b58a701bc9e1b3c5e`.
+Two independent fresh derivations at different times reproduced these bytes
+using the tested StormLib packages and a fixed entry modification time. A
+different tool output fails closed until its source profile is deliberately
+reviewed. The earlier manual operator overlay has identical restored game
+content but different container metadata; it is not accepted as this normalized
+profile. Migrate such input into a new directory during planned maintenance,
+without changing an active extractor's fingerprint. Source hashes and entry
+proof are metadata only; no game content is in Git.
