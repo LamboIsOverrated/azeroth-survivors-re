@@ -1,5 +1,5 @@
 import {account,identifier,positive,atoms,canonical,hash} from './amounts.mjs';
-import {address,signingAddress,safeInteger,decodeMint,decodeTokenAccount,transferTransaction,signedTransaction,signatureOf,verifyDepositReceipt} from '../../economy/settlement/protocol.mjs';
+import {address,signingAddress,safeInteger,decodeMint,decodeTokenAccount,transferTransaction,signedTransaction,signatureOf,verifyTransferReceipt} from '../../economy/settlement/protocol.mjs';
 import {validTransactionError} from './transaction-errors.mjs';
 
 const FORMAT='withdrawal-v1';
@@ -97,8 +97,9 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
  }
  async function finalizedProof(op,saved,observed){
   const receipt=await rpc.call('getTransaction',[saved.signature,{encoding:'base64',commitment:'finalized',maxSupportedTransactionVersion:0}]);
-  if(!receipt||receipt.version!=='legacy'||!Array.isArray(receipt.transaction)||receipt.transaction.length!==2||receipt.transaction[0]!==saved.signedTransaction||receipt.transaction[1]!=='base64'||safeInteger(receipt.slot)!==observed.value.slot||safeInteger(receipt.blockTime*1000)<0||!receipt.meta||!validTransactionError(receipt.meta.err,errorContext(saved))||canonical(receipt.meta.err)!==canonical(observed.value.err))throw Error('Exact finalized raw withdrawal proof required');
-  if(receipt.meta.err===null)verifyDepositReceipt({receipt,signature:saved.signature,intent:{wallet:cfg.treasuryWallet,sourceTokenAccount:cfg.treasuryTokenAccount,atoms:op.request.atoms,memo:op.memo,createdSlot:saved.blockhashSlot,expiresAt:Number.MAX_SAFE_INTEGER},config:{...cfg,treasuryWallet:op.wallet,treasuryTokenAccount:op.request.destinationTokenAccount}});
+  if(!receipt||receipt.version!=='legacy'||!Array.isArray(receipt.transaction)||receipt.transaction.length!==2||receipt.transaction[0]!==saved.signedTransaction||receipt.transaction[1]!=='base64'||safeInteger(receipt.slot)!==observed.value.slot||!receipt.meta||!validTransactionError(receipt.meta.err,errorContext(saved))||canonical(receipt.meta.err)!==canonical(observed.value.err))throw Error('Exact finalized raw withdrawal proof required');
+  if(receipt.blockTime!==null)safeInteger(receipt.blockTime);
+  if(receipt.meta.err===null)verifyTransferReceipt({receipt,signature:saved.signature,intent:{wallet:cfg.treasuryWallet,sourceTokenAccount:cfg.treasuryTokenAccount,atoms:op.request.atoms,memo:op.memo,createdSlot:saved.blockhashSlot},config:{...cfg,treasuryWallet:op.wallet,treasuryTokenAccount:op.request.destinationTokenAccount}});
   else unchangedTokenBalances(receipt,op,saved);
   const chainReceipt=structuredClone({slot:receipt.slot,blockTime:receipt.blockTime,version:'legacy',transaction:receipt.transaction,meta:{err:receipt.meta.err,preTokenBalances:receipt.meta.preTokenBalances,postTokenBalances:receipt.meta.postTokenBalances,...(receipt.meta.err===null?{innerInstructions:receipt.meta.innerInstructions}:{})}});
   return {state:receipt.meta.err===null?'settled':'failed',slot:receipt.slot,observedSlot:observed.slot,sourceId:rpc.sourceId,receiptHash:hash(chainReceipt),chainReceipt};

@@ -172,6 +172,16 @@ export function signedTransaction(raw) {
 }
 
 export function verifyDepositReceipt({ receipt, signature, intent, config }) {
+  const verified = verifyTransferReceipt({ receipt, signature, intent, config });
+  safeInteger(receipt.blockTime);
+  if (receipt.blockTime * 1000 > intent.expiresAt)
+    throw new Error("Deposit outside intent window");
+  return verified;
+}
+
+// Shared signed transfer proof. Outgoing settlement has no wall-clock expiry;
+// deposits additionally require the timestamp policy in verifyDepositReceipt.
+export function verifyTransferReceipt({ receipt, signature, intent, config }) {
   signatureText(signature);
   if (
     !receipt ||
@@ -189,12 +199,9 @@ export function verifyDepositReceipt({ receipt, signature, intent, config }) {
   )
     throw new Error("Successful direct legacy receipt required");
   safeInteger(receipt.slot);
-  safeInteger(receipt.blockTime);
-  if (
-    receipt.slot < intent.createdSlot ||
-    receipt.blockTime * 1000 > intent.expiresAt
-  )
-    throw new Error("Deposit outside intent window");
+  if (receipt.blockTime !== null) safeInteger(receipt.blockTime);
+  if (receipt.slot < intent.createdSlot)
+    throw new Error("Transfer precedes intent slot");
   const bytes = Buffer.from(receipt.transaction[0], "base64");
   if (bytes.toString("base64") !== receipt.transaction[0])
     throw new Error("Invalid receipt encoding");

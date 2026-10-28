@@ -5,6 +5,7 @@ import {
   decodeTokenAccount,
   rawAtoms,
   verifyDepositReceipt,
+  verifyTransferReceipt,
   signatureOf,
 } from "../protocol.mjs";
 import {
@@ -99,6 +100,20 @@ const intent = {
   createdAt: NOW,
   expiresAt: NOW + 300000,
 };
+test('transfer receipts permit explicit null time while deposit receipts require a timestamp within expiry', () => {
+  const {row,tx}=receipt(intent),signature=signatureOf(tx);
+  row.blockTime=null;
+  assert.equal(verifyTransferReceipt({receipt:row,signature,intent,config}).atoms,'9007199254740993');
+  assert.throws(()=>verifyDepositReceipt({receipt:row,signature,intent,config}));
+  for(const value of [undefined,'1700000000',false,{},-1,1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER+1]){
+    row.blockTime=value;
+    assert.throws(()=>verifyTransferReceipt({receipt:row,signature,intent,config}));
+    assert.throws(()=>verifyDepositReceipt({receipt:row,signature,intent,config}));
+  }
+  row.blockTime=intent.expiresAt/1000+1;
+  assert.equal(verifyTransferReceipt({receipt:row,signature,intent,config}).slot,120);
+  assert.throws(()=>verifyDepositReceipt({receipt:row,signature,intent,config}));
+});
 test("deposit receipt verifies the actual signed raw transaction and exact token balance deltas", () => {
   const { row, tx } = receipt(intent);
   assert.equal(
