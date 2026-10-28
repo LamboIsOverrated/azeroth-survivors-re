@@ -264,6 +264,13 @@ configured delay from that packet, the matching one-shot ACK proposes the
 surveyed+Y3.493 origin. Its observer relay is required, a replay must not relay,
 and subsequent ballistic points must relay. Native logs remain necessary to
 attribute each refusal; absence of a relay alone is not a reason diagnosis.
+The ordinary barrier requires exact flags1 and the protocol's `Pose` verb,
+plus the baseline coordinates. Relay flags and verb are retained in memory and
+evidence. The current event API coalesces start and knockback opcodes as `Pose`;
+it does not expose their exact opcode. Any late JUMP8192 relay at the old baseline
+aborts the entire first-ACK run, including after an observation window ends or
+the relay list is cleared. It cannot impersonate ordinary movement. Matching
+ACK confirmation requires JUMP8192 at the distinct surveyed+Y3.493 origin.
 
 The evidence records the actual ordinary-packet delay and total native-receipt
 age at matching ACK. Negative trials add time before the ordinary packet, so

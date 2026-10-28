@@ -630,6 +630,23 @@ struct KnockbackReceipt {
     at: Instant,
     applied: Option<Instant>,
 }
+#[derive(Clone, Copy, Debug)]
+struct SeenRelay {
+    pose: [f32; 3],
+    flags: u32,
+    verb: benilla_protocol::messages::RelayVerb,
+}
+fn invalid_ack_relay(relay: &SeenRelay, baseline: [f32; 3]) -> bool {
+    relay.flags & 8192 != 0 && distance(relay.pose, baseline) < 0.1
+}
+fn ordinary_start_barrier(relays: &[SeenRelay], baseline: [f32; 3]) -> bool {
+    !relays.iter().any(|r| invalid_ack_relay(r, baseline))
+        && relays.iter().any(|r| {
+            r.flags == 1
+                && r.verb == benilla_protocol::messages::RelayVerb::Pose
+                && distance(r.pose, baseline) < 0.1
+        })
+}
 impl KnockbackReceipt {
     fn flight_ms(&self) -> Result<u64> {
         let clock = phases::ReceiptClock {
@@ -654,7 +671,8 @@ struct Run {
     rx: mpsc::Receiver<Input>,
     evidence: Evidence,
     forbidden: Vec<([f32; 3], u32)>,
-    relays: Vec<[f32; 3]>,
+    relays: Vec<SeenRelay>,
+    invalid_ack_baseline: Option<[f32; 3]>,
     sent: usize,
     map: u32,
     expected_teleport: Option<[f32; 3]>,
@@ -708,11 +726,23 @@ impl Run {
                 position,
                 flags,
                 time,
+                verb,
                 ..
             } = &event
             {
                 if side == 1 && *guid == self.peers[0].guid {
-                    self.evidence.write(json!({"event":"accepted-relay","pose":position,"flags":flags,"wire_time":time}))?;
+                    self.evidence.write(json!({"event":"accepted-relay","pose":position,"flags":flags,"wire_time":time,"verb":format!("{verb:?}")}))?;
+                    let relay = SeenRelay {
+                        pose: *position,
+                        flags: *flags,
+                        verb: *verb,
+                    };
+                    ensure!(
+                        !self
+                            .invalid_ack_baseline
+                            .is_some_and(|baseline| invalid_ack_relay(&relay, baseline)),
+                        "late invalid baseline ACK relay during first-ACK probe: {relay:?}"
+                    );
                     ensure!(
                         relay_safe(&self.forbidden, *position, *flags),
                         "server relayed forbidden pose or movement capability"
@@ -727,7 +757,7 @@ impl Run {
                             json!({"event":"corrected-relay","pose":position,"flags":flags}),
                         )?;
                     }
-                    self.relays.push(*position);
+                    self.relays.push(relay);
                 }
             }
             let primary_guid = self.peers[0].guid;
@@ -901,11 +931,11 @@ impl Run {
                                 || self
                                     .relays
                                     .last()
-                                    .is_some_and(|pose| pose[2] > self.floor_z + 2.),
+                                    .is_some_and(|relay| relay.pose[2] > self.floor_z + 2.),
                             "observer speed ACK relay did not preserve airborne pose"
                         );
                         self.expected_run_speed = None;
-                        self.evidence.write(json!({"event":"run-speed-observer-confirmed","speed":speed,"guid":guid,"pose":self.relays.last()}))?;
+                        self.evidence.write(json!({"event":"run-speed-observer-confirmed","speed":speed,"guid":guid,"pose":self.relays.last().map(|r|r.pose)}))?;
                     }
                 }
                 SessionEvent::MoveMode {
@@ -999,6 +1029,9 @@ impl Run {
         let (counter, quad, baseline) = (receipt.counter, receipt.launch, receipt.origin);
         let mut origin = baseline;
         if let Some(probe) = probe {
+            // Retain this across every clear/window until logout: a delayed
+            // rejected ACK at the old baseline must never become positive proof.
+            self.invalid_ack_baseline = Some(baseline);
             let terrain = self.terrain.as_ref().context("survey missing")?;
             origin = probe.origin(baseline, terrain)?;
             // These intentionally malformed client responses use the actual issued
@@ -1036,7 +1069,7 @@ impl Run {
             self.evidence.write(json!({"event":"moving-ack-ordinary-start","pose":baseline,"requested_delay_ms":probe.delay_ms,"ack_origin":origin}))?;
             self.pump(Duration::from_millis(probe.delay_ms))?;
             ensure!(
-                self.relays.iter().any(|p| distance(*p, baseline) < 0.1),
+                ordinary_start_barrier(&self.relays, baseline),
                 "ordinary pending-receipt movement was not relayed"
             );
             self.evidence.write(json!({"event":"moving-ack-ordinary-budget-elapsed","actual_delay_ms":started.elapsed().as_millis(),"displacement_y":3.493}))?;
@@ -1051,7 +1084,9 @@ impl Run {
         if probe.is_some() {
             self.pump(Duration::from_millis(200))?;
             ensure!(
-                self.relays.iter().any(|p| distance(*p, origin) < 0.1),
+                self.relays.iter().any(|r| r.flags == 8192
+                    && r.verb == benilla_protocol::messages::RelayVerb::Pose
+                    && distance(r.pose, origin) < 0.1),
                 "matching first ACK not relayed"
             );
             self.peers[0].pose = origin;
@@ -1212,7 +1247,7 @@ impl Run {
         self.pump(Duration::from_millis(s.observe_ms))?;
         if s.accept {
             ensure!(
-                self.relays.iter().any(|p| distance(*p, pos) < 0.1),
+                self.relays.iter().any(|r| distance(r.pose, pos) < 0.1),
                 "no positive relay for {}",
                 s.name
             );
@@ -1370,6 +1405,7 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         evidence,
         forbidden: vec![],
         relays: vec![],
+        invalid_ack_baseline: None,
         sent: 0,
         map: f.map,
         expected_teleport: None,
@@ -1490,6 +1526,54 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_invalid_same_pose_ack_cannot_satisfy_ordinary_start_barrier() {
+        use benilla_protocol::messages::RelayVerb;
+        let baseline = [1., 2., 3.];
+        let late_ack = SeenRelay {
+            pose: baseline,
+            flags: 8192,
+            verb: RelayVerb::Pose,
+        };
+        let ordinary = SeenRelay {
+            pose: baseline,
+            flags: 1,
+            verb: RelayVerb::Pose,
+        };
+        assert!(!ordinary_start_barrier(&[late_ack], baseline));
+        assert!(invalid_ack_relay(&late_ack, baseline));
+        assert!(ordinary_start_barrier(&[ordinary], baseline));
+        assert!(!invalid_ack_relay(&ordinary, baseline));
+        assert!(!ordinary_start_barrier(&[ordinary, late_ack], baseline));
+        assert!(!ordinary_start_barrier(
+            &[SeenRelay {
+                verb: RelayVerb::Heartbeat,
+                ..ordinary
+            }],
+            baseline
+        ));
+        assert!(!ordinary_start_barrier(
+            &[SeenRelay {
+                flags: 0,
+                ..ordinary
+            }],
+            baseline
+        ));
+        assert!(!ordinary_start_barrier(
+            &[SeenRelay {
+                pose: [1., 5.493, 3.],
+                ..ordinary
+            }],
+            baseline
+        ));
+        assert!(!invalid_ack_relay(
+            &SeenRelay {
+                pose: [1., 5.493, 3.],
+                ..late_ack
+            },
+            baseline
+        ));
+    }
     fn fixture() -> Fixture {
         serde_json::from_value(json!({
             "version":1,"isolated":true,"auth":"127.0.0.1:13724","world":"127.0.0.1:18085",
