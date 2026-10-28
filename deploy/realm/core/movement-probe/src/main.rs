@@ -1,3 +1,4 @@
+mod observe;
 mod phases;
 use anyhow::{bail, ensure, Context, Result};
 use benilla_protocol::{
@@ -96,6 +97,12 @@ struct CanonicalClone {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Observation {
+    guid: u64,
+    seconds: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Fixture {
     version: u32,
     isolated: bool,
@@ -118,6 +125,8 @@ struct Fixture {
     hold_seconds: u64,
     #[serde(default)]
     terrain: Option<phases::TerrainGrid>,
+    #[serde(default)]
+    observation: Option<Observation>,
 }
 
 fn relay_safe(forbidden: &[([f32; 3], u32)], position: [f32; 3], flags: u32) -> bool {
@@ -149,6 +158,7 @@ enum Mode {
     CreateOnly,
     HoldOnline,
     LoginRefusal,
+    ObservePlayer,
 }
 fn parse_mode(arg: Option<&str>) -> Result<Mode> {
     match arg {
@@ -156,6 +166,7 @@ fn parse_mode(arg: Option<&str>) -> Result<Mode> {
         Some("--create-only") => Ok(Mode::CreateOnly),
         Some("--hold-online") => Ok(Mode::HoldOnline),
         Some("--expect-login-refusal") => Ok(Mode::LoginRefusal),
+        Some("--observe-player") => Ok(Mode::ObservePlayer),
         _ => bail!("unknown probe mode"),
     }
 }
@@ -236,6 +247,18 @@ fn validate(f: &Fixture) -> Result<()> {
         f.origin.iter().all(|p| p.is_finite()) && f.orientation.is_finite(),
         "invalid fixture pose"
     );
+    if let Some(observation) = &f.observation {
+        ensure!(
+            observation.guid > 0
+                && observation.guid <= u32::MAX.into()
+                && (10..=90).contains(&observation.seconds)
+                && f.steps.is_empty()
+                && !f.create_missing_characters
+                && f.terrain.is_none(),
+            "observation requires one player GUID, 10..90 seconds and no actions or provisioning"
+        );
+        return Ok(());
+    }
     ensure!(
         (3..=48).contains(&f.steps.len()),
         "require 3..48 bounded steps"
@@ -576,6 +599,7 @@ struct Run {
     terrain: Option<phases::TerrainGrid>,
     baseline_health: Option<u32>,
     teleport: Option<TeleportReceipt>,
+    capture: Option<observe::Capture>,
 }
 impl Run {
     fn count(&mut self) -> Result<()> {
@@ -603,6 +627,11 @@ impl Run {
                     continue;
                 }
             };
+            if side == 0 {
+                if let Some(record) = self.capture.as_mut().and_then(|c| c.event(&event)) {
+                    self.evidence.write(record)?;
+                }
+            }
             if let SessionEvent::UnitMove {
                 guid,
                 position,
@@ -1058,6 +1087,10 @@ fn observe_refusal(f: &Fixture, pass: &str, evidence: &mut Evidence) -> Result<(
 }
 
 fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
+    ensure!(
+        (mode == Mode::ObservePlayer) == f.observation.is_some(),
+        "observation fixture and explicit observer-only mode must match"
+    );
     for (key, value) in [
         ("WOW_UNATTENDED", "1"),
         ("WOW_NOSOUND", "1"),
@@ -1068,7 +1101,12 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
             "require {key}={value}"
         );
     }
-    let pass = password("WOW_", &f.primary)?;
+    // Observer-only mode never reads or uses the attended actor's credentials.
+    let pass = if mode == Mode::ObservePlayer {
+        String::new()
+    } else {
+        password("WOW_", &f.primary)?
+    };
     let observer_pass = password("WOW_OBSERVER_", &f.observer)?;
     let mut evidence = Evidence {
         file: fs::OpenOptions::new()
@@ -1117,7 +1155,18 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
     if mode == Mode::Movement {
         peers.push(connect(f, &f.observer, &observer_pass, 1, tx.clone())?);
     }
-    peers.insert(0, connect(f, &f.primary, &pass, 0, tx)?);
+    let (active_id, active_pass) = if mode == Mode::ObservePlayer {
+        (&f.observer, &observer_pass)
+    } else {
+        (&f.primary, &pass)
+    };
+    peers.insert(0, connect(f, active_id, active_pass, 0, tx)?);
+    if let Some(observation) = &f.observation {
+        ensure!(
+            observation.guid != peers[0].guid,
+            "watched player must differ from observer"
+        );
+    }
     let mut run = Run {
         peers,
         rx,
@@ -1136,6 +1185,10 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         terrain: f.terrain.clone(),
         baseline_health: None,
         teleport: None,
+        capture: f.observation.as_ref().map(|o| observe::Capture {
+            guid: o.guid,
+            ..Default::default()
+        }),
     };
     run.pump(Duration::from_secs(3))?;
     ensure!(
@@ -1147,7 +1200,15 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
             && (run.peers.len() == 1 || distance(run.peers[1].pose, f.origin) < 20.),
         "initial world pose differs from measured fixture"
     );
-    if mode == Mode::HoldOnline {
+    if let Some(observation) = &f.observation {
+        run.peers[0].writer.name_query(observation.guid)?;
+        run.evidence.write(
+            json!({"event":"observer-ready","observer_guid":run.peers[0].guid,
+            "watched_guid":observation.guid,"seconds":observation.seconds,
+            "voluntary_movement":false,"actor_login":false}),
+        )?;
+        run.pump(Duration::from_secs(observation.seconds))?;
+    } else if mode == Mode::HoldOnline {
         run.evidence.write(json!({"event":"online-hold-ready","guid":run.peers[0].guid,"hold_seconds":f.hold_seconds,"voluntary_movement":false,"economy_requests":false}))?;
         run.pump(Duration::from_secs(f.hold_seconds))?;
     } else {
@@ -1161,7 +1222,7 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         run.peers[0].logged_out,
         "world did not confirm primary logout"
     );
-    let mut again = session(f, &f.primary, &pass)?;
+    let mut again = session(f, active_id, active_pass)?;
     let saved = again
         .char_enum()?
         .into_iter()
@@ -1178,10 +1239,18 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         run.pump(Duration::from_secs(25))?;
         ensure!(run.peers[1].logged_out, "observer logout not confirmed");
     }
-    run.evidence.write(json!({"event":if mode==Mode::HoldOnline {"online-hold-complete"} else {"wire-checks-passed"},"steps":if mode==Mode::HoldOnline {0} else {f.steps.len()},"remaining":"correlate isolated server rejection reasons; map/operator fixtures require separate runs"}))?;
-    if mode == Mode::HoldOnline {
+    if let Some(capture) = &run.capture {
+        run.evidence.write(json!({"event":"observer-complete","watched_guid":capture.guid,
+            "moves":capture.moves,"visibility_gaps":capture.gaps,"actor_persistence_verified":false,
+            "remaining":"attended actor logout/save and native reason correlation; gaps require separate actor or destination evidence"}))?;
+        ensure!(capture.moves > 0, "no watched-player movement observed");
+        println!("Bounded observer capture and observer saved pose verified; actor persistence remains separate.");
+    } else if mode == Mode::HoldOnline {
+        run.evidence
+            .write(json!({"event":"online-hold-complete","steps":0}))?;
         println!("Bounded online hold, normal logout and saved pose verified.");
     } else {
+        run.evidence.write(json!({"event":"wire-checks-passed","steps":f.steps.len(),"remaining":"correlate isolated server rejection reasons; map/operator fixtures require separate runs"}))?;
         println!("Bounded wire checks passed; isolated server reason evidence is still required.");
     }
     Ok(())
@@ -1190,7 +1259,7 @@ fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().collect();
     ensure!(
         args.len()==3 || args.len()==4,
-        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--create-only|--hold-online|--expect-login-refusal]"
+        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--create-only|--hold-online|--expect-login-refusal|--observe-player]"
     );
     let raw = fs::read(&args[1])?;
     ensure!(raw.len() <= 65536, "fixture too large");
@@ -1260,6 +1329,58 @@ mod tests {
             Mode::LoginRefusal
         );
         assert!(parse_mode(Some("--do-something-else")).is_err());
+    }
+    #[test]
+    fn observer_mode_is_explicit_bounded_and_cannot_include_scripted_actions() {
+        assert!(parse_mode(Some("--observe-player")).is_ok());
+        let base: Value = serde_json::from_str(include_str!("../fixture.template.json")).unwrap();
+        let mut v = base;
+        v["isolated"] = json!(true);
+        v["source_commit"] = json!("a".repeat(40));
+        v["image_digest"] = json!("b".repeat(64));
+        v["steps"] = json!([]);
+        v["observation"] = json!({"guid":42,"seconds":60});
+        let valid = |v: &Value| {
+            serde_json::from_value::<Fixture>(v.clone()).is_ok_and(|f| validate(&f).is_ok())
+        };
+        assert!(valid(&v));
+        for guid in [0, u64::MAX] {
+            let mut bad = v.clone();
+            bad["observation"]["guid"] = json!(guid);
+            assert!(!valid(&bad));
+        }
+        for seconds in [0, 9, 91, 180] {
+            let mut bad = v.clone();
+            bad["observation"]["seconds"] = json!(seconds);
+            assert!(!valid(&bad));
+        }
+        let mut bad = v.clone();
+        bad["create_missing_characters"] = json!(true);
+        assert!(!valid(&bad));
+        let mut bad = v.clone();
+        bad["steps"] = serde_json::from_str::<Value>(include_str!("../fixture.template.json"))
+            .unwrap()["steps"]
+            .clone();
+        assert!(!valid(&bad));
+        let f: Fixture = serde_json::from_value(v).unwrap();
+        assert!(execute(
+            &f,
+            &[],
+            Path::new("unused-observer-test-output"),
+            Mode::Movement
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("explicit observer-only mode"));
+        assert!(execute(
+            &fixture(),
+            &[],
+            Path::new("unused-observer-test-output"),
+            Mode::ObservePlayer
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("explicit observer-only mode"));
     }
     #[test]
     fn refusal_classifies_actual_library_peer_eof_but_not_other_failures() {

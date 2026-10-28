@@ -264,3 +264,34 @@ manifest, private fixture hash, complete JSONL, exit code, server log segment,
 GM/security/config checks, and saved-pose result together. The tool ends with
 `wire-checks-passed`, explicitly leaving server reason correlation and other
 fixtures outstanding; this is not a production-readiness verdict.
+
+For an attended browser boat test, `--observe-player` logs in **only** the
+declared dedicated `observer`, using `WOW_OBSERVER_USER/PASS/CHAR`. It never
+reads or uses the attended actor's credentials, sends voluntary movement, or
+logs in the fixture's primary account. Keep both declared QA identities and all
+existing endpoint/clone guards. Set `steps: []`, creation off, no terrain grid,
+and `observation: {"guid": ACTUAL_PLAYER_GUID, "seconds": 60}`. The GUID must be
+a nonzero player low GUID, distinct from the observer, and duration is 10–90
+seconds. The observation fixture and explicit mode must match; another mode
+cannot accidentally run it. The ordinary observer must already stand at the
+measured `origin` on the declared map. Place it only through the operator's
+normal private-clone fixture procedure, after coordinating exclusive access.
+
+`observer-ready` is the attended action prompt. The tool records the watched
+player's received world pose/flags/wire timestamp and, when present, the exact
+transport GUID, deck-local pose and local orientation. No coordinate transform
+or transport path is inferred. Transport creates include their received pose,
+progress anchor, entry/type and rotation fields. Each record also has the
+probe's monotonic receipt time. Name queries identify the watched GUID without
+logging in that player. Out-of-range and destroy events are explicit coverage
+gaps. A stationary dock observer can lose sight during a ride or map transfer;
+that portion requires separate attended actor evidence or a destination capture.
+The capture must contain at least one actual player movement relay to exit
+successfully. Object creates alone cannot satisfy it.
+
+The observer logs out normally and reconnects only to verify **its own** saved
+pose. `observer-complete` explicitly leaves actor persistence unverified and
+reports movement/gap counts. Preserve the actor's attended boarding, ride,
+disembark and normal logout with read-only server saved-pose/log evidence before
+claiming transport acceptance. No observation-only run emits `wire-checks-passed`.
+The independent 180-second deadline and packet ceilings remain in force.
