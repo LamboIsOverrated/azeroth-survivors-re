@@ -15,7 +15,7 @@ export default defineRailway((ctx) => {
     env: { MARIADB_ROOT_PASSWORD: preserve() },
   });
   const realmCore = service("realm-core", {
-    source: github("LamboIsOverrated/azeroth-survivors-re", { branch: "deploy/realm-core", rootDirectory: "/deploy/realm/core", checkSuites: false }),
+    source: github("LamboIsOverrated/azeroth-survivors-re", { branch: "deploy/realm-core", rootDirectory: "/deploy/realm/core", checkSuites: true }),
     build: { buildEnvironment: "V3", builder: "DOCKERFILE", dockerfilePath: "Dockerfile", watchPatterns: ["/deploy/realm/core/**"] },
     healthcheck: "/healthz",
     replicas: { "iad": 1 },
@@ -24,7 +24,7 @@ export default defineRailway((ctx) => {
     env: { DB_HOST: preserve(), DB_MANGOS_PASSWORD: preserve(), DB_PORT: preserve(), DB_REALMWEB_PASSWORD: preserve(), DB_ROOT_PASSWORD: preserve(), PORT: preserve(), REALM_DOMAIN: preserve(), SOAP_ADMIN_PASSWORD: preserve(), SOAP_ADMIN_USERNAME: preserve() },
   });
   const realmWeb = service("realm-web", {
-    source: github("LamboIsOverrated/azeroth-survivors-re", { branch: "feat/browser-pvp-mmo", rootDirectory: "/deploy/realm", checkSuites: false }),
+    source: github("LamboIsOverrated/azeroth-survivors-re", { branch: "feat/browser-pvp-mmo", rootDirectory: "/deploy/realm", checkSuites: true }),
     build: { buildEnvironment: "V3", builder: "DOCKERFILE", dockerfilePath: "Dockerfile", watchPatterns: ["/deploy/realm/Dockerfile", "/deploy/realm/package*.json", "/deploy/realm/web/**", "/deploy/realm/economy/**", "/deploy/realm/market/**", "/deploy/realm/core/repair_client.py", "/deploy/realm/core/adt_repair.py"] },
     healthcheck: "/healthz",
     deploy: { drainingSeconds: 30, healthcheckTimeout: 120, restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10, sleepApplication: false, limitOverride: { containers: { cpu: 2, memoryBytes: 4000000000 } } },

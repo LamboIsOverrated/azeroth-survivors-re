@@ -3,12 +3,17 @@ on:
   workflow_dispatch:
   push:
     branches: [feat/browser-pvp-mmo]
-    paths: ['crates/wenilla/**', 'crates/wenilla-realm/**', 'Cargo.lock', '.github/workflows/realm.yml']
+    paths: ['crates/**', 'Cargo.toml', 'Cargo.lock', '.cargo/**', 'scripts/web-build.sh', 'scripts/web-setup.sh', 'web/**', '.github/workflows/realm.yml']
   pull_request:
     paths:
       - 'deploy/realm/**'
-      - 'crates/wenilla-realm/**'
-      - 'crates/wenilla/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'scripts/web-build.sh'
+      - 'scripts/web-setup.sh'
+      - 'web/**'
       - '.github/workflows/realm.yml'
 permissions:
   contents: read
@@ -45,6 +50,7 @@ jobs:
       - name: realm formatting
         run: cargo fmt -p wenilla-realm -p wenilla -- --check
   build-mmo:
+    needs: realm-checks
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container: rust:1.98.1-bookworm
