@@ -295,6 +295,21 @@ connection or evidence-file creation. It does not verify source/image/operator
 attestations. Pending-image private draft fixtures deliberately fail preflight
 until the independently verified artifact and fresh evidence paths are bound.
 
+Each authenticated peer waits for both its declared-map `Worldport` (initial
+entry, no far-transfer ACK) and its own player `ObjectCreate` before sending
+one normal `CMSG_SET_ACTIVE_MOVER`. A claim immediately after `PLAYER_LOGIN`
+can reach the native `STATUS_LOGGEDIN` handler too early and be discarded.
+An initial client-control grant is not guaranteed, so it cannot replace these
+two received facts. Evidence records world verification, self create, control
+events and the outgoing claim with their monotonic timings. A claim is proof
+of what the probe sent; it does not observe the server's internal `_inWorld`.
+All baseline moves and movement ACKs require the claim first. Duplicate matching
+initial world/create events neither reset pose nor claim again. A new session
+gets fresh entry state; foreign creates never authorize a claim. Unexpected
+far/map transfers, foreign control or own nonplayer creates abort the bounded
+fixture. Lifecycle unit tests model the pinned logged-in dispatch boundary;
+only an actual corrected-handshake run can establish server acceptance.
+
 The probe watches received ordinary-avatar health and `UNIT_FLAG_IN_COMBAT`.
 Combat or a health change aborts; an unintended combat cast cannot silently
 continue as an unattended physics test. Unexpected world transfers, unconfigured

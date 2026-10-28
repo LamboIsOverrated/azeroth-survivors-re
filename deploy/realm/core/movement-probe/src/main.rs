@@ -1,3 +1,4 @@
+mod entry;
 mod observe;
 mod phases;
 use anyhow::{bail, ensure, Context, Result};
@@ -509,6 +510,7 @@ struct Peer {
     pose: [f32; 3],
     orientation: f32,
     entered: bool,
+    entry: entry::EntryClaim,
     logged_out: bool,
 }
 fn should_create(id: &Identity, names: &[String], permit: bool) -> Result<bool> {
@@ -582,7 +584,6 @@ fn connect(
         "QA roster is outside measured fixture"
     );
     s.player_login(c.guid)?;
-    s.set_active_mover(c.guid)?;
     let (mut reader, mut writer) = s.into_split()?;
     writer.watch_sends();
     thread::spawn(move || {
@@ -616,6 +617,7 @@ fn connect(
         pose: [c.position.x, c.position.y, c.position.z],
         orientation: f.orientation,
         entered: false,
+        entry: entry::EntryClaim::new(c.guid, f.map)?,
         logged_out: false,
     })
 }
@@ -814,16 +816,22 @@ impl Run {
                     orientation,
                     needs_ack,
                 } => {
-                    ensure!(
-                        !needs_ack && map_id == self.map,
-                        "unexpected world transfer; measured transport fixture required"
-                    );
-                    p.pose = position;
-                    p.orientation = orientation;
-                    p.entered = true;
-                    self.evidence.write(
-                        json!({"event":"entered","side":side,"map":map_id,"pose":position}),
-                    )?;
+                    let first = p.entry.world_verified(map_id, needs_ack)?;
+                    self.evidence.write(json!({"event":"entry-world-verified","side":side,"guid":p.guid,"map":map_id,"pose":position,"first":first,"needs_ack":needs_ack}))?;
+                    if first {
+                        p.pose = position;
+                        p.orientation = orientation;
+                        p.entered = true;
+                        self.evidence.write(
+                            json!({"event":"entered","side":side,"map":map_id,"pose":position}),
+                        )?;
+                    }
+                }
+                SessionEvent::ObjectCreate { guid, kind, .. } if guid == p.guid => {
+                    let first = p
+                        .entry
+                        .self_created(guid, kind == benilla_protocol::EntityKind::Player)?;
+                    self.evidence.write(json!({"event":"entry-self-created","side":side,"guid":guid,"kind":format!("{kind:?}"),"first":first,"declared_map":self.map}))?;
                 }
                 SessionEvent::Teleport {
                     guid,
@@ -831,6 +839,10 @@ impl Run {
                     position,
                     orientation,
                 } if guid == p.guid => {
+                    ensure!(
+                        p.entry.is_claimed(),
+                        "teleport ACK before post-entry mover claim"
+                    );
                     ensure!(
                         side == 0
                             && self.expected_teleport.is_some_and(|wanted| {
@@ -857,6 +869,10 @@ impl Run {
                     counter,
                     speed,
                 } if guid == p.guid => {
+                    ensure!(
+                        p.entry.is_claimed(),
+                        "speed ACK before post-entry mover claim"
+                    );
                     let mut pose = p.pose;
                     let mut flags = 0;
                     let mut fall_ms = 0;
@@ -943,18 +959,29 @@ impl Run {
                     counter,
                     mode,
                     apply,
-                } if guid == p.guid => p.writer.move_mode_ack(
-                    guid,
-                    counter,
-                    mode,
-                    apply,
-                    if apply { mode.flag() } else { 0 },
-                    (p.pose, p.orientation),
-                )?,
-                SessionEvent::ClientControl {
-                    mover,
-                    allow_move: true,
-                } if mover == p.guid => p.writer.set_active_mover(mover)?,
+                } if guid == p.guid => {
+                    ensure!(
+                        p.entry.is_claimed(),
+                        "mode ACK before post-entry mover claim"
+                    );
+                    p.writer.move_mode_ack(
+                        guid,
+                        counter,
+                        mode,
+                        apply,
+                        if apply { mode.flag() } else { 0 },
+                        (p.pose, p.orientation),
+                    )?;
+                }
+                SessionEvent::ClientControl { mover, allow_move } => {
+                    self.evidence.write(json!({"event":"entry-client-control","side":side,"mover":mover,"allow_move":allow_move,"claimed":p.entry.is_claimed()}))?;
+                    ensure!(
+                        allow_move && mover == p.guid,
+                        "unexpected client control change"
+                    );
+                    // Initial entry is claimed only after both server facts below;
+                    // duplicate own grants cannot send a second claim.
+                }
                 SessionEvent::CinematicTriggered { .. } => p.writer.complete_cinematic()?,
                 SessionEvent::LoggedOut => {
                     p.logged_out = true;
@@ -969,6 +996,10 @@ impl Run {
                     counter,
                     launch,
                 } => {
+                    ensure!(
+                        p.entry.is_claimed(),
+                        "knockback received before post-entry mover claim"
+                    );
                     let quad = [
                         launch.zspeed,
                         launch.cos_angle,
@@ -995,6 +1026,14 @@ impl Run {
                     self.evidence.write(json!({"event":"server-knockback-received","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
                 }
                 _ => {}
+            }
+            if let Some(guid) = p.entry.take_claim() {
+                ensure!(
+                    p.entered && !p.logged_out,
+                    "claim requires live verified entry"
+                );
+                p.writer.set_active_mover(guid)?;
+                self.evidence.write(json!({"event":"entry-active-mover-claim-sent","side":side,"guid":guid,"map":self.map,"opcode":op::CMSG_SET_ACTIVE_MOVER,"after_world_and_own_player_create":true,"server_in_world_observed":false}))?;
             }
             self.count()?;
         }
@@ -1101,6 +1140,12 @@ impl Run {
         Ok(())
     }
     fn step(&mut self, f: &Fixture, s: &Step) -> Result<()> {
+        ensure!(
+            self.peers
+                .iter()
+                .all(|p| p.entry.is_claimed() && !p.logged_out),
+            "movement phase requires each post-entry mover claim"
+        );
         if let Some(gate) = &s.await_teleport {
             self.teleport = None;
             self.expected_teleport = Some(gate.destination);
@@ -1428,8 +1473,8 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
     };
     run.pump(Duration::from_secs(3))?;
     ensure!(
-        run.peers.iter().all(|p| p.entered),
-        "all required world entries must be proven"
+        run.peers.iter().all(|p| p.entered && p.entry.is_claimed()),
+        "all world entries and post-entry mover claims must be proven"
     );
     ensure!(
         run.health.baseline[0] == Some(60),
