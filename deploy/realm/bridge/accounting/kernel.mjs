@@ -1,5 +1,6 @@
 import {AccountingStore} from './store.mjs';
 import {deposits} from './deposit.mjs';
+import {events} from './events.mjs';
 import {configuration,account,identifier,units,atoms,positive,gameAtoms,canonical,hash,GAME_MAX} from './amounts.mjs';
 
 const reasons=new Set(['quest','loot','vendor-sale','starting-money']);
@@ -17,7 +18,7 @@ function request(input){
 export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date.now}){
  const cfg=configuration(config),store=new AccountingStore(path,cfg),proofs=deposits({store,rpc,resolveWallet,clock});
  const get=id=>store.db.prepare('SELECT * FROM ac_operations WHERE id=?').get(id);
- function owned(accountId,id){account(accountId);identifier(id);const row=get(id);if(!row||row.account_id!==accountId)throw Error('Account operation required');return row;}
+ function owned(accountId,id){account(accountId);identifier(id);const row=get(id);if(!row||row.account_id!==accountId||JSON.parse(row.payload).format!==undefined)throw Error('Single-character account operation required');return row;}
  function operation(accountId,id){const row=owned(accountId,id);return {...JSON.parse(row.payload),state:row.state};}
  function matchDomain(value){if(!value||value.phase!=='LIVE'||value.namespaceId!==cfg.namespaceId||value.configHash!==cfg.hash)throw Error('LIVE namespace proof required');}
  function snapshot(value,req){
@@ -39,6 +40,7 @@ export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date
   }else throw Error('Indeterminate receipt keeps reservation');
  }
  return Object.freeze({
+  ...events({store,world,clock}),
   config:cfg,
   createDeposit:input=>proofs.create(input),confirmDeposit:input=>proofs.confirm(input),
   totals:()=>store.totals(),
@@ -60,11 +62,13 @@ export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date
    const op={phase:'LIVE',namespaceId:cfg.namespaceId,configHash:cfg.hash,id:req.id,request:req,expected,afterUnits:after.toString(),atoms:gameAtoms(req.units,cfg)};
    return store.atomic(()=>{
     const race=get(req.id);if(race){if(race.account_id!==req.accountId||canonical(JSON.parse(race.payload).request)!==canonical(req))throw Error('World idempotency conflict');return operation(req.accountId,req.id);}
+    if(store.db.prepare('SELECT guid FROM ac_retired WHERE guid=?').get(req.guid))throw Error('Retired character identity');
     const character=store.db.prepare('SELECT * FROM ac_characters WHERE guid=?').get(req.guid);
     if(character){if(character.account_id!==req.accountId||character.units!==expected.moneyUnits||character.version!==expected.version||store.balance('world_allocated','character:'+req.guid)!==gameAtoms(expected.moneyUnits,cfg))throw Error('Unbacked/stale character snapshot');}
     else{if(expected.moneyUnits!=='0')throw Error('Unbacked stock character money refused');store.db.prepare('INSERT INTO ac_characters VALUES(?,?,?,?)').run(req.guid,req.accountId,'0',expected.version);}
     store.db.prepare('INSERT INTO ac_operations VALUES(?,?,?,?,NULL)').run(req.id,req.accountId,canonical(op),'reserved');
     store.db.prepare('INSERT INTO ac_locks VALUES(?,?)').run(req.guid,req.id);
+    store.db.prepare('INSERT INTO ac_locks VALUES(?,?)').run('account:'+req.accountId,req.id);
     if(req.kind==='issue')store.db.prepare('INSERT INTO ac_events VALUES(?,?)').run(req.eventId,req.id);
     const [bucket,owner,hold]=source(op),amount=atoms(op.atoms);
     store.post({key:'reserve:'+req.id,kind:'world-reserve',payload:op,postings:[{bucket,owner,delta:-amount},{bucket:hold,owner:'operation:'+req.id,delta:amount}]});
@@ -91,7 +95,7 @@ export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date
    if(typeof world?.ack!=='function')throw Error('Durable world fence acknowledgement unavailable');
    const ack=await world.ack({operation:structuredClone(op),receiptId:proof.id,receiptHash,batchKey});matchDomain(ack);
    if(ack.operationId!==id||ack.receiptId!==proof.id||ack.batchKey!==batchKey||ack.receiptHash!==receiptHash)throw Error('Accounting acknowledgement mismatch');
-   store.atomic(()=>{const current=owned(accountId,id);if(current.state==='complete')return;if(current.state!=='awaiting_ack'||current.receipt!==canonical(proof))throw Error('Accounting acknowledgement conflict');store.db.prepare("UPDATE ac_operations SET state='complete' WHERE id=?").run(id);store.db.prepare('DELETE FROM ac_locks WHERE guid=? AND operation_id=?').run(op.request.guid,id);});
+   store.atomic(()=>{const current=owned(accountId,id);if(current.state==='complete')return;if(current.state!=='awaiting_ack'||current.receipt!==canonical(proof))throw Error('Accounting acknowledgement conflict');store.db.prepare("UPDATE ac_operations SET state='complete' WHERE id=?").run(id);store.db.prepare('DELETE FROM ac_locks WHERE operation_id=?').run(id);});
    return operation(accountId,id);
   },
   close:()=>store.close(),
