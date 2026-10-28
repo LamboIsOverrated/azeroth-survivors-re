@@ -1,0 +1,50 @@
+name: realm-bridge-source
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/browser-pvp-mmo]
+    paths: ['deploy/realm/bridge/**', '.github/workflows/realm-bridge.yml']
+  pull_request:
+    paths: ['deploy/realm/bridge/**', '.github/workflows/realm-bridge.yml']
+permissions:
+  contents: read
+concurrency:
+  group: realm-bridge-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  pinned-core:
+    runs-on: ubuntu-latest
+    container: debian:bookworm-slim@sha256:ec31d744f83f4a73447ba045aaab9409997efe5cc706eca4890c1be36cc1606a
+    timeout-minutes: 70
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install matching Debian core toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libboost-all-dev libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify durable TEST outbox and C++ fault harness
+        run: |
+          npm ci --prefix deploy/realm
+          node --test deploy/realm/bridge/tests/*.test.mjs
+          g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test
+          /tmp/world-bridge-test
+      - name: Apply only to verified pinned CMaNGOS source
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/cmangos/mangos-classic /tmp/realm-core-source
+          git -C /tmp/realm-core-source checkout --detach de8f72993b9e1faa1bf92dd5505f3daec5cea3ce
+          git -C /tmp/realm-core-source submodule update --init --recursive
+          node deploy/realm/bridge/tools/apply-patch.mjs /tmp/realm-core-source --apply
+      - name: Compile complete auth and world servers without background bots
+        run: |
+          cmake -S /tmp/realm-core-source -B /tmp/realm-core-build \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/realm-core-install \
+            -DBUILD_GAME_SERVER=ON -DBUILD_LOGIN_SERVER=ON -DBUILD_EXTRACTORS=OFF \
+            -DBUILD_PLAYERBOTS=OFF -DBUILD_AHBOT=OFF -DPCH=ON
+          cmake --build /tmp/realm-core-build --target mangosd realmd -j2
+          printf 'Full pinned-source compile passed. This workflow does not deploy or enable the bridge.\n' >> "$GITHUB_STEP_SUMMARY"
