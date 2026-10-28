@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 
 function account(value) {
   if (!Number.isSafeInteger(value) || value < 1 || value > 4294967295)
-    throw new Error("Trusted realm account required");
+    throw new Error("Trusted bounded account required");
   return value;
 }
 function units(value, { zero = false, max = 2147483646n } = {}) {
@@ -19,13 +19,14 @@ function guid(value) {
   return value;
 }
 function command(row, action) {
-  return `realmbridge v1 TEST ${action} ${row.id} ${row.direction} ${row.account_id} ${row.guid} ${row.units} ${row.expected_before}`;
+  return `realmbridge v1 TEST ${action} ${row.id} ${row.direction} ${row.realm_account_id} ${row.guid} ${row.units} ${row.expected_before}`;
 }
 const terminal = (row) => ["applied", "rejected"].includes(row.state);
 function view(row) {
   return {
     id: row.id,
     accountId: row.account_id,
+    realmAccountId: row.realm_account_id,
     guid: row.guid,
     units: row.units,
     direction: row.direction,
@@ -60,12 +61,28 @@ export class BridgeOutbox {
     this.now = now;
     this.db = new DatabaseSync(dbPath);
     try {
-      this.db
-        .exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
-    SELECT sequence,account_id,delta,kind FROM journal LIMIT 0;
-    CREATE TABLE IF NOT EXISTS world_bridge_outbox(id TEXT PRIMARY KEY,account_id INTEGER NOT NULL,request_key TEXT NOT NULL,guid TEXT NOT NULL,units TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('grant','debit')),expected_before TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','pending','applied','rejected')),receipt TEXT,created_at INTEGER NOT NULL,UNIQUE(account_id,request_key)) STRICT;
-    CREATE TRIGGER IF NOT EXISTS bridge_intent_immutable BEFORE UPDATE ON world_bridge_outbox WHEN NEW.id IS NOT OLD.id OR NEW.account_id IS NOT OLD.account_id OR NEW.request_key IS NOT OLD.request_key OR NEW.guid IS NOT OLD.guid OR NEW.units IS NOT OLD.units OR NEW.direction IS NOT OLD.direction OR NEW.expected_before IS NOT OLD.expected_before OR NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT,'immutable bridge intent');END;
-  `);
+      this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;
+        SELECT sequence,account_id,delta,kind FROM journal LIMIT 0;`);
+      this.transaction(() => {
+        const table = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='world_bridge_outbox'").get();
+        const marker = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='world_bridge_schema'").get();
+        // The previous outbox had only one ambiguous identity. Never guess that
+        // old journal owners were also the numeric game-account owners.
+        if (Boolean(table) !== Boolean(marker))
+          throw new Error("Ambiguous legacy/incomplete TEST bridge schema; explicit recovery required");
+        if (!table) this.db.exec(`
+          CREATE TABLE world_bridge_schema(singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL CHECK(version=2)) STRICT;
+          INSERT INTO world_bridge_schema VALUES(1,2);
+          CREATE TABLE world_bridge_outbox(id TEXT PRIMARY KEY,account_id INTEGER NOT NULL,realm_account_id INTEGER NOT NULL CHECK(realm_account_id BETWEEN 1 AND 4294967295),request_key TEXT NOT NULL,guid TEXT NOT NULL,units TEXT NOT NULL,direction TEXT NOT NULL CHECK(direction IN ('grant','debit')),expected_before TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','pending','applied','rejected')),receipt TEXT,created_at INTEGER NOT NULL,UNIQUE(account_id,request_key)) STRICT;
+        `);
+        const versions = this.db.prepare("SELECT singleton,version FROM world_bridge_schema").all();
+        if (versions.length !== 1 || versions[0].singleton !== 1 || versions[0].version !== 2)
+          throw new Error("Unsupported TEST bridge schema version");
+        this.db.exec(`
+          SELECT id,account_id,realm_account_id,request_key,guid,units,direction,expected_before,state,receipt,created_at FROM world_bridge_outbox LIMIT 0;
+          CREATE TRIGGER IF NOT EXISTS bridge_intent_immutable BEFORE UPDATE ON world_bridge_outbox WHEN NEW.id IS NOT OLD.id OR NEW.account_id IS NOT OLD.account_id OR NEW.realm_account_id IS NOT OLD.realm_account_id OR NEW.request_key IS NOT OLD.request_key OR NEW.guid IS NOT OLD.guid OR NEW.units IS NOT OLD.units OR NEW.direction IS NOT OLD.direction OR NEW.expected_before IS NOT OLD.expected_before OR NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT,'immutable bridge intent');END;
+        `);
+      });
     } catch (error) {
       this.db.close();
       throw error;
@@ -143,6 +160,7 @@ export class BridgeOutbox {
       character.loading !== false
     )
       throw new Error("Character must be owned, offline and not loading");
+    const realmAccountId = account(character.realmAccountId);
     units(character.moneyUnits, { zero: true });
     return this.transaction(() => {
       const prior = this.db
@@ -153,6 +171,7 @@ export class BridgeOutbox {
       if (prior) {
         if (
           prior.guid !== characterGuid ||
+          prior.realm_account_id !== realmAccountId ||
           prior.units !== amount ||
           prior.direction !== direction
         )
@@ -169,11 +188,12 @@ export class BridgeOutbox {
         );
       this.db
         .prepare(
-          "INSERT INTO world_bridge_outbox(id,account_id,request_key,guid,units,direction,expected_before,state,created_at) VALUES(?,?,?,?,?,?,?,'queued',?)",
+          "INSERT INTO world_bridge_outbox(id,account_id,realm_account_id,request_key,guid,units,direction,expected_before,state,created_at) VALUES(?,?,?,?,?,?,?,?,'queued',?)",
         )
         .run(
           nonce,
           id,
+          realmAccountId,
           idempotencyKey,
           characterGuid,
           amount,
@@ -191,7 +211,7 @@ export class BridgeOutbox {
       receipt.phase !== "TEST" ||
       receipt.id !== row.id ||
       receipt.direction !== row.direction ||
-      receipt.accountId !== String(row.account_id) ||
+      receipt.accountId !== String(row.realm_account_id) ||
       receipt.guid !== row.guid ||
       receipt.units !== row.units ||
       receipt.expectedBefore !== row.expected_before ||

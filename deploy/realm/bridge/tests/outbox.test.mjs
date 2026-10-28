@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Ledger } from "../../economy/ledger.mjs";
 import { BridgeOutbox } from "../outbox.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "world-bridge-")),
@@ -15,9 +16,12 @@ function fixture(t) {
   let fail = false,
     afterCommitTimeout = false,
     worldMoney = 50,
-    applyCount = 0;
+    applyCount = 0,
+    realmAccountId = 42;
+  const commands = [];
   const transport = {
     async execute(command) {
+      commands.push(command);
       const [
         ,
         version,
@@ -64,6 +68,7 @@ function fixture(t) {
     transport,
     authorizeCharacter: async (id, guid) => ({
       accountId: id,
+      realmAccountId,
       guid,
       moneyUnits: "50",
       online: false,
@@ -81,6 +86,10 @@ function fixture(t) {
     transport,
     receipts,
     options,
+    commands,
+    set realmAccountId(value) {
+      realmAccountId = value;
+    },
     get box() {
       return box;
     },
@@ -203,7 +212,7 @@ test("durable rejection releases once and world debit credits vault only after m
     phase: "TEST",
     id: row.id,
     direction: "grant",
-    accountId: "1",
+    accountId: "42",
     guid: "7",
     units: "70",
     expectedBefore: "50",
@@ -243,6 +252,7 @@ test("trusted ownership and offline/loading state precede any reservation", asyn
       ...f.options,
       authorizeCharacter: async () => ({
         accountId: 1,
+        realmAccountId: 42,
         guid: "7",
         moneyUnits: "50",
         online: false,
@@ -264,7 +274,7 @@ test("deleted character durable rejection refunds a reserved grant exactly once 
     phase: "TEST",
     id: row.id,
     direction: "grant",
-    accountId: "1",
+    accountId: "42",
     guid: "7",
     units: "70",
     expectedBefore: "50",
@@ -290,4 +300,77 @@ test("deleted character durable rejection refunds a reserved grant exactly once 
       .length,
     1,
   );
+});
+
+test("unequal realm and web IDs route world changes without moving another journal owner's funds", async (t) => {
+  const f = fixture(t);
+  f.ledger.allocate(42, "200");
+  const row = await grant(f.box);
+  assert.equal(row.accountId, 1);
+  assert.equal(row.realmAccountId, 42);
+  await f.box.step({ accountId: 1, id: row.id });
+  assert.equal(f.box.get({ accountId: 1, id: row.id }).state, "applied");
+  assert.equal(f.ledger.balance(1), "30");
+  assert.equal(f.ledger.balance(42), "200");
+  assert.equal(f.worldMoney, 120);
+  assert.ok(f.commands.every(command => command.split(" ")[6] === "42"));
+  assert.throws(() => f.box.get({ accountId: 42, id: row.id }));
+  await assert.rejects(f.box.step({ accountId: 42, id: row.id }));
+});
+
+test("a receipt echoing the web ID instead of the persisted realm ID stays pending", async (t) => {
+  const f = fixture(t), row = await grant(f.box);
+  f.receipts.set(row.id, {version:1, phase:"TEST", id:row.id, direction:"grant", accountId:"1", guid:"7", units:"70", expectedBefore:"50", state:"rejected", before:"50", after:"50", reason:"stale"});
+  await f.box.step({ accountId:1, id:row.id });
+  assert.equal(f.box.get({ accountId:1, id:row.id }).state,"pending");
+  assert.equal(f.ledger.balance(1),"30");
+  assert.equal(f.applyCount,0);
+  f.receipts.set(row.id,{...f.receipts.get(row.id),accountId:"42"});
+  await f.box.step({ accountId:1, id:row.id });
+  assert.equal(f.ledger.balance(1),"100");
+});
+
+test("changed mappings cannot rebind an existing request and restart reconciles its original realm receipt", async (t) => {
+  const f = fixture(t), row = await grant(f.box);
+  f.afterCommitTimeout = true;
+  await f.box.step({ accountId:1, id:row.id });
+  assert.equal(f.worldMoney,120);
+  f.realmAccountId=99;
+  await assert.rejects(grant(f.box),/idempotency|mapping/i);
+  f.restart();
+  f.options.authorizeCharacter=async()=>{throw new Error("mapping service unavailable");};
+  f.restart();
+  f.afterCommitTimeout=false;
+  await f.box.step({ accountId:1, id:row.id });
+  assert.equal(f.box.get({ accountId:1, id:row.id }).state,"applied");
+  assert.equal(f.box.get({ accountId:1, id:row.id }).realmAccountId,42);
+  assert.equal(f.applyCount,1);
+  assert.equal(f.ledger.balance(1),"30");
+  assert.ok(f.commands.every(command => command.split(" ")[6] === "42"));
+});
+
+test("realm ownership proof is explicit, bounded and immutable in durable intents", async (t) => {
+  const f = fixture(t);
+  for(const realmAccountId of [undefined,null,0,-1,"42",42.5,4294967296]) {
+    const box=new BridgeOutbox({...f.options,authorizeCharacter:async()=>({accountId:1,realmAccountId,guid:"7",moneyUnits:"50",online:false,loading:false})});
+    try { await assert.rejects(grant(box)); } finally { box.close(); }
+  }
+  assert.equal(f.ledger.balance(1),"100");
+  const row=await grant(f.box);
+  const db=new DatabaseSync(f.options.dbPath);
+  try { assert.throws(()=>db.prepare("UPDATE world_bridge_outbox SET realm_account_id=99 WHERE id=?").run(row.id),/immutable/i); } finally { db.close(); }
+});
+
+test("unversioned TEST outboxes fail closed without assuming their stored account IDs match realm IDs", (t) => {
+  const dir=mkdtempSync(join(tmpdir(),"world-bridge-legacy-")),dbPath=join(dir,"test.sqlite"),ledger=new Ledger(dbPath);
+  t.after(()=>{ledger.close();rmSync(dir,{recursive:true,force:true});});
+  ledger.allocate(1,"100");
+  const db=new DatabaseSync(dbPath);
+  db.exec("CREATE TABLE world_bridge_outbox(id TEXT PRIMARY KEY,account_id INTEGER NOT NULL,request_key TEXT NOT NULL,guid TEXT NOT NULL,units TEXT NOT NULL,direction TEXT NOT NULL,expected_before TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT,created_at INTEGER NOT NULL)");
+  db.prepare("INSERT INTO world_bridge_outbox VALUES(?,?,?,?,?,?,?,?,?,?)").run("a".repeat(64),1,"old","7","70","grant","50","pending",null,0);
+  db.close();
+  assert.throws(()=>new BridgeOutbox({dbPath,phase:"TEST",transport:{execute:async()=>{}},authorizeCharacter:async()=>{}}),/schema|legacy|ambiguous|version/i);
+  assert.equal(ledger.balance(1),"100");
+  const check=new DatabaseSync(dbPath);
+  try { assert.equal(check.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='world_bridge_schema'").get().n,0);assert.equal(check.prepare("SELECT account_id FROM world_bridge_outbox").get().account_id,1); } finally { check.close(); }
 });
