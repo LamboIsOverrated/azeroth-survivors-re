@@ -1,5 +1,9 @@
 use anyhow::{ensure, Result};
 
+pub fn speed_matches(expected: f32, actual: f32) -> bool {
+    expected.is_finite() && actual.is_finite() && (expected - actual).abs() <= 0.01
+}
+
 pub fn matches_destination(expected: [f32; 3], actual: [f32; 3]) -> bool {
     expected.iter().chain(actual.iter()).all(|p| p.is_finite())
         && expected
@@ -36,6 +40,12 @@ pub fn fall_position(origin: [f32; 3], elapsed_seconds: f64, floor: f32) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn speed_gate_requires_exact_finite_authoritative_speed() {
+        assert!(speed_matches(14., 14.));
+        assert!(!speed_matches(14., 7.));
+        assert!(!speed_matches(14., f32::NAN));
+    }
     #[test]
     fn only_the_expected_finite_server_destination_matches() {
         assert!(matches_destination([1., 2., 8.], [1., 2., 8.]));

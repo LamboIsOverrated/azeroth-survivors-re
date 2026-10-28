@@ -31,6 +31,14 @@ struct TeleportGate {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SpeedGate {
+    speed: f32,
+    timeout_ms: u64,
+    #[serde(default)]
+    above_floor: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Step {
     name: String,
     delay_ms: u64,
@@ -42,6 +50,8 @@ struct Step {
     clear_flags: u32,
     #[serde(default)]
     await_teleport: Option<TeleportGate>,
+    #[serde(default)]
+    await_run_speed: Option<SpeedGate>,
     #[serde(default)]
     relative_to_teleport: bool,
     #[serde(default)]
@@ -179,6 +189,18 @@ fn validate(f: &Fixture) -> Result<()> {
     );
     let mut has_teleport = false;
     for (i, s) in f.steps.iter().enumerate() {
+        if let Some(gate) = &s.await_run_speed {
+            ensure!(
+                gate.speed.is_finite()
+                    && (1.0..=28.0).contains(&gate.speed)
+                    && (1000..=30000).contains(&gate.timeout_ms),
+                "invalid bounded run-speed gate"
+            );
+            ensure!(
+                !gate.above_floor || has_teleport || s.await_teleport.is_some(),
+                "airborne speed gate needs prior server teleport"
+            );
+        }
         if let Some(gate) = &s.await_teleport {
             ensure!(
                 !has_teleport && (1000..=10000).contains(&gate.timeout_ms),
@@ -264,7 +286,8 @@ fn validate(f: &Fixture) -> Result<()> {
             .iter()
             .map(|s| s.delay_ms
                 + s.observe_ms
-                + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms))
+                + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms)
+                + s.await_run_speed.as_ref().map_or(0, |g| g.timeout_ms))
             .sum::<u64>()
             <= 110000,
         "step schedule exceeds deadline reserve"
@@ -427,6 +450,10 @@ struct Run {
     sent: usize,
     map: u32,
     expected_teleport: Option<[f32; 3]>,
+    expected_run_speed: Option<f32>,
+    speed_ack_seen: bool,
+    speed_above_floor: bool,
+    floor_z: f32,
     teleport: Option<TeleportReceipt>,
 }
 impl Run {
@@ -482,6 +509,7 @@ impl Run {
                     self.relays.push(*position);
                 }
             }
+            let primary_guid = self.peers[0].guid;
             let p = &mut self.peers[side];
             match event {
                 SessionEvent::Worldport {
@@ -533,21 +561,86 @@ impl Run {
                     counter,
                     speed,
                 } if guid == p.guid => {
-                    self.evidence
-                        .write(json!({"event":"server-speed-ack","side":side,"speed":speed}))?;
+                    let mut pose = p.pose;
+                    let mut flags = 0;
+                    let mut fall_ms = 0;
+                    let mut jump = None;
+                    if side == 0 {
+                        if let Some(tp) = &self.teleport {
+                            let elapsed = tp.at.elapsed();
+                            if elapsed.as_secs_f64() <= 10.0 {
+                                pose = phases::fall_position(
+                                    tp.position,
+                                    elapsed.as_secs_f64(),
+                                    self.floor_z,
+                                )?;
+                                fall_ms = u32::try_from(elapsed.as_millis())?;
+                                if pose[2] > self.floor_z + 0.1 {
+                                    flags = 8192;
+                                    jump = Some(JumpInfo {
+                                        zspeed: 0.,
+                                        cos_angle: 1.,
+                                        sin_angle: 0.,
+                                        xy_speed: 0.,
+                                    });
+                                }
+                            } else {
+                                ensure!(
+                                    p.pose[2] <= self.floor_z + 0.15,
+                                    "stale airborne speed ACK clock"
+                                );
+                            }
+                        }
+                    }
+                    if side == 0 && kind == benilla_protocol::SpeedKind::Run {
+                        if let Some(expected) = self.expected_run_speed {
+                            ensure!(
+                                phases::speed_matches(expected, speed),
+                                "unexpected authoritative run speed"
+                            );
+                            ensure!(
+                                !self.speed_above_floor || pose[2] > self.floor_z + 2.,
+                                "speed change arrived after airborne window"
+                            );
+                            self.speed_ack_seen = true;
+                        }
+                    }
+                    self.evidence.write(json!({"event":"server-speed-ack","side":side,"speed":speed,"kind":format!("{kind:?}"),"counter":counter,"pose":pose,"flags":flags}))?;
                     p.writer.force_speed_change_ack(
                         kind,
                         guid,
                         counter,
                         speed,
-                        0,
-                        p.pose,
+                        flags,
+                        pose,
                         p.orientation,
                         0.,
-                        0,
-                        None,
+                        fall_ms,
+                        jump,
                         None,
                     )?;
+                }
+                SessionEvent::SpeedChanged { guid, kind, speed }
+                    if side == 1
+                        && guid == primary_guid
+                        && kind == benilla_protocol::SpeedKind::Run =>
+                {
+                    if self
+                        .expected_run_speed
+                        .is_some_and(|wanted| phases::speed_matches(wanted, speed))
+                        && self.speed_ack_seen
+                    {
+                        ensure!(
+                            !self.speed_above_floor
+                                || self
+                                    .relays
+                                    .last()
+                                    .is_some_and(|pose| pose[2] > self.floor_z + 2.),
+                            "observer speed ACK relay did not preserve airborne pose"
+                        );
+                        self.expected_run_speed = None;
+                        self.evidence.write(json!({"event":"run-speed-observer-confirmed","speed":speed,"guid":guid,"pose":self.relays.last()}))?;
+                    }
                 }
                 SessionEvent::MoveMode {
                     guid,
@@ -596,6 +689,20 @@ impl Run {
             ensure!(
                 self.expected_teleport.is_none() && self.teleport.is_some(),
                 "expected server teleport did not arrive"
+            );
+        }
+        if let Some(gate) = &s.await_run_speed {
+            self.expected_run_speed = Some(gate.speed);
+            self.speed_ack_seen = false;
+            self.speed_above_floor = gate.above_floor;
+            self.evidence.write(json!({"event":"operator-speed-ready","case":s.name,"run_speed":gate.speed,"timeout_ms":gate.timeout_ms,"above_floor":gate.above_floor}))?;
+            let deadline = Instant::now() + Duration::from_millis(gate.timeout_ms);
+            while self.expected_run_speed.is_some() && Instant::now() < deadline {
+                self.pump(Duration::from_millis(50))?;
+            }
+            ensure!(
+                self.expected_run_speed.is_none(),
+                "run-speed ACK/observer confirmation did not arrive"
             );
         }
         self.pump(Duration::from_millis(s.delay_ms))?;
@@ -785,6 +892,10 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         sent: 0,
         map: f.map,
         expected_teleport: None,
+        expected_run_speed: None,
+        speed_ack_seen: false,
+        speed_above_floor: false,
+        floor_z: f.origin[2],
         teleport: None,
     };
     run.pump(Duration::from_secs(3))?;
@@ -966,6 +1077,24 @@ mod tests {
             timeout_ms: 5000,
         });
         f.steps[2].fall_from_teleport = false;
+        assert!(validate(&f).is_err());
+    }
+    #[test]
+    fn speed_phases_require_bounded_real_speed_and_airborne_context() {
+        let mut f = fixture();
+        f.steps[0].await_run_speed = Some(SpeedGate {
+            speed: 14.,
+            timeout_ms: 10000,
+            above_floor: false,
+        });
+        validate(&f).unwrap();
+        f.steps[0].await_run_speed.as_mut().unwrap().speed = f32::NAN;
+        assert!(validate(&f).is_err());
+        f.steps[0].await_run_speed.as_mut().unwrap().speed = 14.;
+        f.steps[0].await_run_speed.as_mut().unwrap().above_floor = true;
+        assert!(validate(&f).is_err());
+        f.steps[0].await_run_speed.as_mut().unwrap().above_floor = false;
+        f.steps[0].await_run_speed.as_mut().unwrap().timeout_ms = 31000;
         assert!(validate(&f).is_err());
     }
     #[test]

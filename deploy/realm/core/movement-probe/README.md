@@ -171,8 +171,23 @@ continuous rendered-client physics. Count the first forgery only with its native
 distance-budget reason after the real teleport ACK, rather than a packet dropped
 by an unfinished teleport. Require the legitimate post-ACK airborne relay,
 recovery, saved pose, unchanged health and independent operator log correlation.
-Speed-change packets are acknowledged from the latest accepted pose and recorded;
-they require a separate audited normal server trigger for a speed-reset drill.
+For an attended speed-change phase, a step may specify `await_run_speed` with
+`speed` (1–28 yards/second), `timeout_ms` (1,000–30,000), and optional
+`above_floor`. The `operator-speed-ready` marker names the expected run speed.
+The private in-game operator selects the ordinary primary and uses normal
+`.modify aspeed 2`, then a separate checkpoint restores `.modify aspeed 1`.
+For an unmodified level-one avatar these run speeds are 14 and 7. The probe ACKs
+each actual force-change packet's kind, counter and exact speed. Completion
+requires the observer's corresponding run-speed relay after that ACK, not just
+the server's request. Received counters, ACK poses and observer poses are logged.
+
+If the server teleported the avatar into a drop, speed ACKs use the current
+receipt-clock fall position and preserve falling flags/tail. `above_floor: true`
+requires both the ACK position and the observer relay to remain more than two
+yards above the old floor; a slow operator action fails rather than claiming a
+midair test after landing. Restore the speed through the normal operator UI even
+if a test fails, and keep both ordinary avatars at security zero. These gates
+wait for external attended actions; the probe sends no privileged command.
 Unexpected world transfers and knockback fail closed because this version does
 not synthesize passenger or forced trajectories.
 Full transport boarding/detach, knockback/withheld landing, taxi, slow fall,
