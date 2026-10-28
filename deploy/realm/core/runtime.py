@@ -1,5 +1,6 @@
 """Private CMaNGOS supervisor. Listener readiness is not gameplay verification."""
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import world_inventory
@@ -180,6 +184,8 @@ GRANT SELECT,INSERT,UPDATE,DELETE ON classiccharacters.* TO 'mangos'@'%';
 -- The pinned GameEventMgr startup uses TRUNCATE for this bookkeeping table.
 -- Keep DROP scoped to that table; no other runtime DDL is authorized.
 GRANT DROP ON classiccharacters.game_event_status TO 'mangos'@'%';
+-- World::ResetWeeklyQuests uses the same pinned TRUNCATE bookkeeping cleanup.
+GRANT DROP ON classiccharacters.character_queststatus_weekly TO 'mangos'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE,CREATE TEMPORARY TABLES ON classicmangos.* TO 'mangos'@'%';
 GRANT SELECT,INSERT,UPDATE,DELETE ON classiclogs.* TO 'mangos'@'%';
 GRANT SELECT ON classicrealmd.* TO 'realmweb'@'%';
@@ -427,6 +433,88 @@ def listening(port):
         return False
 
 
+class NoSoapRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        return None
+
+
+def parse_world_health(raw):
+    """Accept only the read-only v1 snapshot shared with the compiled login gate."""
+    if len(raw) > 65536:
+        raise ValueError('world health response too large')
+    try:
+        text = raw.decode('utf-8')
+        if '\0' in text or '<!DOCTYPE' in text.upper() or '<!ENTITY' in text.upper():
+            raise ValueError('unsupported world health XML')
+        envelope = ET.fromstring(text)
+        elements = list(envelope.iter())
+        if envelope.tag.rsplit('}', 1)[-1] != 'Envelope' or any(
+                element.tag.rsplit('}', 1)[-1] == 'Fault' for element in elements):
+            raise ValueError('world health SOAP fault or envelope mismatch')
+        results = [element for element in elements if element.tag.rsplit('}', 1)[-1] == 'result']
+        if len(results) != 1 or len(results[0]):
+            raise ValueError('ambiguous world health result')
+        value = (results[0].text or '').strip()
+        prefix = 'REALM_BRIDGE_HEALTH_V1 '
+        if not value.startswith(prefix):
+            raise ValueError('world health version prefix missing')
+        def unique_fields(pairs):
+            if len({key for key, _ in pairs}) != len(pairs):
+                raise ValueError('duplicate world health field')
+            return dict(pairs)
+        payload = json.loads(value[len(prefix):], object_pairs_hook=unique_fields)
+    except (UnicodeError, ET.ParseError, json.JSONDecodeError) as error:
+        raise ValueError('invalid world health response') from error
+    fields = {'version', 'loginPermitted', 'writerFailed', 'inflightQueryOk', 'inflight', 'reason'}
+    if not isinstance(payload, dict) or set(payload) != fields or type(payload['version']) is not int or payload['version'] != 1:
+        raise ValueError('world health fields/version mismatch')
+    if any(type(payload[key]) is not bool for key in ('loginPermitted', 'writerFailed', 'inflightQueryOk')):
+        raise ValueError('world health boolean mismatch')
+    count = payload['inflight']
+    if payload['inflightQueryOk']:
+        if (not isinstance(count, str) or not re.fullmatch(r'0|[1-9][0-9]{0,19}', count)
+                or int(count) > 18446744073709551615):
+            raise ValueError('world health count mismatch')
+    elif count is not None:
+        raise ValueError('failed world health query must not claim a count')
+    reason = ('writer-failed' if payload['writerFailed'] else
+              'inflight-query-failed' if not payload['inflightQueryOk'] else
+              'inflight-pending' if count != '0' else 'ready')
+    if payload['reason'] != reason or payload['loginPermitted'] is not (reason == 'ready'):
+        raise ValueError('contradictory world health snapshot')
+    return payload
+
+
+def world_login_ready(cfg):
+    if compiled_capabilities(cfg)['CORE_REALM_BRIDGE_COMPILED'] == '0':
+        return True
+    url = 'http://127.0.0.1:7878/'
+    body = (b'<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">'
+            b'<SOAP-ENV:Body><ns1:executeCommand xmlns:ns1="urn:MaNGOS">'
+            b'<command>realmbridge v1 health</command></ns1:executeCommand>'
+            b'</SOAP-ENV:Body></SOAP-ENV:Envelope>')
+    credentials = (cfg['SOAP_ADMIN_USERNAME'] + ':' + cfg['SOAP_ADMIN_PASSWORD']).encode('ascii')
+    request = urllib.request.Request(url, data=body, headers={
+        'Content-Type': 'text/xml', 'Authorization': 'Basic ' + base64.b64encode(credentials).decode('ascii')})
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoSoapRedirect()).open(request, timeout=2) as response:
+            if response.status != 200 or response.geturl() != url:
+                return False
+            return parse_world_health(response.read(65537))['loginPermitted']
+    except (OSError, ValueError, TypeError, urllib.error.URLError):
+        # No response body, authentication header or provider secret is logged.
+        return False
+
+
+def update_readiness(cfg):
+    for key, port in [('login', 3724), ('world', 8085), ('soap', 7878)]:
+        STATE[key] = listening(port)
+    prepared = all(STATE[key] for key in ('database', 'data', 'login', 'world', 'soap'))
+    STATE['ready'] = prepared and world_login_ready(cfg)
+    STATE['phase'] = ('listeners-ready' if STATE['ready'] else
+                      'world-login-blocked' if prepared else 'world-starting')
+
+
 def game_options(env):
     # Game parsers only need their own runtime configuration. Never inherit
     # migration, web database, SOAP operator or unrelated deployment secrets.
@@ -556,10 +644,7 @@ def main():
         while not STOP.wait(2):
             if any(p.poll() is not None for p in CHILDREN):
                 raise RuntimeError('core child exited; terminating sibling for clean restart')
-            for key, port in [('login', 3724), ('world', 8085), ('soap', 7878)]:
-                STATE[key] = listening(port)
-            STATE['ready'] = all(STATE[key] for key in ('database', 'data', 'login', 'world', 'soap'))
-            STATE['phase'] = 'listeners-ready' if STATE['ready'] else 'world-starting'
+            update_readiness(cfg)
     except Exception as error:
         if game_started:
             # Runtime failures must reach ON_FAILURE rather than leave a live

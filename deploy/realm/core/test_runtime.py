@@ -1,6 +1,7 @@
 import importlib.util
 from contextlib import ExitStack
 import json
+import io
 import os
 import pathlib
 import re
@@ -15,6 +16,7 @@ import types
 import unittest
 import urllib.error
 import urllib.request
+import urllib.response
 from unittest.mock import patch
 
 HERE = pathlib.Path(__file__).parent
@@ -334,6 +336,96 @@ class RuntimeTests(unittest.TestCase):
                 runtime.require_bridge_schema(cfg, pathlib.Path(directory))
             self.assertEqual(metadata.call_count, 2, 'a prior success must not cache schema acceptance')
 
+    def health_reply(self, **extra):
+        body = dict(version=1, loginPermitted=True, writerFailed=False,
+                    inflightQueryOk=True, inflight='0', reason='ready')
+        body.update(extra)
+        return ('<Envelope><Body><executeCommandResponse><result>REALM_BRIDGE_HEALTH_V1 '
+                + json.dumps(body) + '</result></executeCommandResponse></Body></Envelope>').encode()
+
+    def test_read_only_world_health_contract_rejects_failed_or_inconsistent_snapshots(self):
+        self.assertTrue(runtime.parse_world_health(self.health_reply())['loginPermitted'])
+        for change in [dict(loginPermitted=False, writerFailed=True, inflightQueryOk=False,
+                            inflight=None, reason='writer-failed'),
+                       dict(loginPermitted=False, inflightQueryOk=False, inflight=None,
+                            reason='inflight-query-failed'),
+                       dict(loginPermitted=False, inflight='1', reason='inflight-pending')]:
+            self.assertFalse(runtime.parse_world_health(self.health_reply(**change))['loginPermitted'])
+        for change in [dict(version=True), dict(version=2), dict(loginPermitted=1),
+                       dict(writerFailed=0), dict(inflightQueryOk=1), dict(inflight=0),
+                       dict(inflight='00'), dict(inflight='18446744073709551616'),
+                       dict(inflightQueryOk=False), dict(loginPermitted=True, inflight='1'),
+                       dict(reason='inflight-pending'), dict(unknown=True)]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                runtime.parse_world_health(self.health_reply(**change))
+        for raw in [b'<Envelope><Fault>private fault</Fault></Envelope>',
+                    self.health_reply().replace(b'<result>', b'<result>extra\n'),
+                    self.health_reply().replace(b'"version": 1', b'"version": 1, "version": 1'),
+                    b'<!DOCTYPE a [<!ENTITY e "private">]><Envelope/>', b'x'*65537]:
+            with self.subTest(raw=raw[:30]), self.assertRaises(ValueError):
+                runtime.parse_world_health(raw)
+
+    def test_compiled_world_health_uses_bounded_fixed_soap_and_stock_does_not_call_it(self):
+        cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1'))
+        for reply, expected in [(self.health_reply(), True),
+                                (self.health_reply(loginPermitted=False, inflight='1', reason='inflight-pending'), False),
+                                (b'<Envelope><Fault>private fault</Fault></Envelope>', False)]:
+            response = io.BytesIO(reply)
+            response.status = 200
+            response.geturl = lambda: 'http://127.0.0.1:7878/'
+            with self.subTest(expected=expected), patch.object(runtime.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.return_value = response
+                self.assertIs(runtime.world_login_ready(cfg), expected)
+                request = opener.return_value.open.call_args.args[0]
+                self.assertEqual(request.full_url, 'http://127.0.0.1:7878/')
+                self.assertIn(b'<command>realmbridge v1 health</command>', request.data)
+                self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 2)
+        with patch.object(runtime.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = TimeoutError('private timeout')
+            self.assertFalse(runtime.world_login_ready(cfg))
+            opener.reset_mock()
+            self.assertTrue(runtime.world_login_ready(runtime.settings(self.env())))
+            opener.assert_not_called()
+
+    def test_healthy_ports_never_override_failed_compiled_login_gate(self):
+        cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1'))
+        with patch.dict(runtime.STATE, {'database': True, 'data': True}), \
+                patch.object(runtime, 'listening', return_value=True), \
+                patch.object(runtime, 'world_login_ready', return_value=False):
+            runtime.update_readiness(cfg)
+            self.assertFalse(runtime.STATE['ready'])
+            self.assertEqual(runtime.STATE['phase'], 'world-login-blocked')
+        with patch.dict(runtime.STATE, {'database': True, 'data': True}), \
+                patch.object(runtime, 'listening', return_value=True), \
+                patch.object(runtime, 'world_login_ready', return_value=True):
+            runtime.update_readiness(cfg)
+            self.assertTrue(runtime.STATE['ready'])
+
+    def test_fixed_loopback_health_never_sends_credentials_to_environment_proxy(self):
+        observed = []
+        reply = self.health_reply()
+        class RecordingHTTP(urllib.request.HTTPHandler):
+            def http_open(self, request):
+                observed.append((request.host, request.full_url, request.get_header('Authorization')))
+                response = urllib.response.addinfourl(io.BytesIO(reply), {}, request.full_url, 200)
+                response.msg = 'OK'
+                return response
+        builder = runtime.urllib.request.build_opener
+        def recording_builder(*handlers):
+            return builder(*handlers, RecordingHTTP())
+        cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1'))
+        proxy_env = {'http_proxy': 'http://credential-sink.invalid:8899',
+                     'https_proxy': 'http://credential-sink.invalid:8899', 'no_proxy': ''}
+        with patch.dict(runtime.os.environ, proxy_env, clear=True), \
+                patch.object(runtime.urllib.request, 'proxy_bypass', return_value=False), \
+                patch.object(runtime.urllib.request, 'build_opener', side_effect=recording_builder), \
+                patch.object(socket, 'create_connection', side_effect=AssertionError('network forbidden')):
+            self.assertTrue(runtime.world_login_ready(cfg))
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0], '127.0.0.1:7878')
+        self.assertEqual(observed[0][1], 'http://127.0.0.1:7878/')
+        self.assertTrue(observed[0][2].startswith('Basic '))
+
     @unittest.skipUnless(os.environ.get('CORE_BRIDGE_SCHEMA_FIXTURE') == '1',
                          'requires explicitly enabled disposable MariaDB fixture')
     def test_actual_mariadb_bridge_metadata_read_only_and_structural_failures(self):
@@ -438,8 +530,9 @@ CREATE TABLE realm_bridge_receipts (operation_id CHAR(64) CHARACTER SET ascii CO
 
     def test_schema_sql_does_not_elevate_normal_accounts(self):
         sql = runtime.security_sql(runtime.settings(self.env()))
-        self.assertEqual(sql.count('GRANT DROP'), 1)
+        self.assertEqual(sql.count('GRANT DROP'), 2)
         self.assertIn("GRANT DROP ON classiccharacters.game_event_status TO 'mangos'@'%';", sql)
+        self.assertIn("GRANT DROP ON classiccharacters.character_queststatus_weekly TO 'mangos'@'%';", sql)
         self.assertNotIn('GRANT ALL', sql)
         self.assertEqual(sql.count("'Azeroth TEST PvP'"), 2)
         self.assertIn('gmlevel=3', sql)

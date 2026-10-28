@@ -39,14 +39,21 @@ class EventStatusPrivileges(unittest.TestCase):
         try:
             root_query(f'CREATE DATABASE `{database}`; '
                        f'CREATE TABLE `{database}`.game_event_status (event SMALLINT UNSIGNED PRIMARY KEY) ENGINE=InnoDB; '
+                       f'CREATE TABLE `{database}`.character_queststatus_weekly (guid INT UNSIGNED PRIMARY KEY) ENGINE=InnoDB; '
+                       f'CREATE TABLE `{database}`.saved_variables (NextWeeklyQuestResetTime BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB; '
                        f'CREATE TABLE `{database}`.protected_characters (guid INT PRIMARY KEY) ENGINE=InnoDB; '
                        f'INSERT INTO `{database}`.game_event_status VALUES (12),(13); '
+                       f'INSERT INTO `{database}`.character_queststatus_weekly VALUES (4); '
+                       f'INSERT INTO `{database}`.saved_variables VALUES (0); '
                        f'INSERT INTO `{database}`.protected_characters VALUES (1); '
                        f"CREATE USER '{user}'@'127.0.0.1' IDENTIFIED BY '{password}'; "
                        f"GRANT SELECT,INSERT,UPDATE,DELETE ON `{database}`.* TO '{user}'@'127.0.0.1';")
             denied = query(f'TRUNCATE TABLE `{database}`.game_event_status', as_user=True)
             self.assertNotEqual(denied.returncode, 0)
             self.assertIn('1142', denied.stderr)
+            weekly_denied = query(f'TRUNCATE TABLE `{database}`.character_queststatus_weekly', as_user=True)
+            self.assertNotEqual(weekly_denied.returncode, 0)
+            self.assertIn('1142', weekly_denied.stderr)
             # A source DML change is another valid option, without adding privilege.
             self.assertEqual(query(f'DELETE FROM `{database}`.game_event_status', as_user=True).returncode, 0)
             root_query(f'INSERT INTO `{database}`.game_event_status VALUES (12),(13)')
@@ -61,6 +68,15 @@ class EventStatusPrivileges(unittest.TestCase):
             cleaned = query(f'TRUNCATE TABLE `{database}`.game_event_status', as_user=True)
             self.assertEqual(cleaned.returncode, 0, 'table-scoped grant did not permit stock cleanup')
             self.assertEqual(root_query(f'SELECT COUNT(*) FROM `{database}`.game_event_status'), '0')
+            # Force the due branch independently of the calendar. This executes
+            # the pinned reset's SQL contract, not a substitute C++ world loop.
+            self.assertEqual(root_query(f'SELECT NextWeeklyQuestResetTime < UNIX_TIMESTAMP() FROM `{database}`.saved_variables'), '1')
+            weekly_cleaned = query(f'TRUNCATE TABLE `{database}`.character_queststatus_weekly; '
+                                   f'UPDATE `{database}`.saved_variables SET NextWeeklyQuestResetTime=UNIX_TIMESTAMP()+604800',
+                                   as_user=True)
+            self.assertEqual(weekly_cleaned.returncode, 0, 'weekly cleanup still poisons the compiled FIFO writer')
+            self.assertEqual(root_query(f'SELECT COUNT(*) FROM `{database}`.character_queststatus_weekly'), '0')
+            self.assertEqual(root_query(f'SELECT NextWeeklyQuestResetTime > UNIX_TIMESTAMP() FROM `{database}`.saved_variables'), '1')
             self.assertEqual(query(f'INSERT INTO `{database}`.game_event_status VALUES (12),(13)', as_user=True).returncode, 0)
             for statement in (f'DROP TABLE `{database}`.protected_characters',
                               f'ALTER TABLE `{database}`.protected_characters ADD COLUMN unwanted INT',
