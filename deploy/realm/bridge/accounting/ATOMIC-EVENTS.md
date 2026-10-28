@@ -31,4 +31,6 @@ Independent review found two material closed-module defects before integration: 
 
 ## Gates still open
 
+The optional closed withdrawal extension shares this exact journal and every account resource lock. It reserves only available vault claims, so pending event/world/escrow claims cannot bypass their complete receipt/ack fence. Its additive schema marker requires drained operations and stopped old workers; opening-time marker rejection cannot revoke an already-open older connection. See `WITHDRAWALS.md`; no runtime or production signer/RPC is wired by that extension.
+
 Full C++ preflight and checked complete gameplay transaction before effects; account/login/map/save/version/field-writer fences; all stock quest/vendor/trade/mail/AH/expiry/delete/import/GM/script paths; real CharacterDatabase FIFO/rollback/fault drills with actual gameplay; durable worker and monitoring; production RPC trust/custody/funding/mint acceptance. Software kernel tests do not satisfy those gates. The stock MMO currency remains TEST/nonredeemable, and CA alone enables nothing.

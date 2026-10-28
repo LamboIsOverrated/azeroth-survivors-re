@@ -1,6 +1,7 @@
 import {AccountingStore} from './store.mjs';
 import {deposits} from './deposit.mjs';
 import {events} from './events.mjs';
+import {withdrawals} from './withdrawals.mjs';
 import {configuration,account,identifier,units,atoms,positive,gameAtoms,canonical,hash,GAME_MAX} from './amounts.mjs';
 
 const reasons=new Set(['quest','loot','vendor-sale','starting-money']);
@@ -15,7 +16,7 @@ function request(input){
  else if(input.eventId!==undefined||input.reason!==undefined)throw Error('Unexpected issuance event');
  return result;
 }
-export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date.now}){
+export function createAccounting({path,config,rpc,archiveRpc,signer,resolveWallet,world,clock=Date.now}){
  const cfg=configuration(config),store=new AccountingStore(path,cfg),proofs=deposits({store,rpc,resolveWallet,clock});
  const get=id=>store.db.prepare('SELECT * FROM ac_operations WHERE id=?').get(id);
  function owned(accountId,id){account(accountId);identifier(id);const row=get(id);if(!row||row.account_id!==accountId||JSON.parse(row.payload).format!==undefined)throw Error('Single-character account operation required');return row;}
@@ -41,6 +42,7 @@ export function createAccounting({path,config,rpc,resolveWallet,world,clock=Date
  }
  return Object.freeze({
   ...events({store,world,clock}),
+  ...withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}),
   config:cfg,
   createDeposit:input=>proofs.create(input),confirmDeposit:input=>proofs.confirm(input),
   totals:()=>store.totals(),

@@ -42,10 +42,18 @@ export class AccountingStore{
    const row=this.db.prepare('SELECT version,config FROM ac_namespace').get(),text=canonical(this.config);
    if(row&&(row.version!==1||row.config!==text))throw Error('Immutable LIVE namespace/configuration mismatch');
    if(!row)this.db.prepare('INSERT INTO ac_namespace VALUES(1,1,?)').run(text);
-   const schema=this.db.prepare('SELECT version,contract FROM ac_schema').all();
-   if(schema.length&&!(schema.length===1&&schema[0].version===2&&schema[0].contract==='atomic-events-v1'))throw Error('Unsupported accounting schema');
+   const schema=this.db.prepare('SELECT version,contract FROM ac_schema ORDER BY version').all();
+   if(schema.length&&!(schema.length<=2&&schema[0].version===2&&schema[0].contract==='atomic-events-v1'&&(schema.length===1||schema[1].version===3&&schema[1].contract==='conserved-withdrawals-v1')))throw Error('Unsupported accounting schema');
    if(!schema.length)this.db.prepare('INSERT INTO ac_schema VALUES(2,?)').run('atomic-events-v1');
    for(const table of ['ac_namespace','ac_schema','ac_retired','ac_batches','ac_postings','ac_intents','ac_deposits','ac_receipts','ac_events'])for(const action of ['UPDATE','DELETE'])this.db.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_${action} BEFORE ${action} ON ${table} BEGIN SELECT RAISE(ABORT,'append-only journal'); END`);
+   this.db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ac_operations_immutable BEFORE UPDATE ON ac_operations WHEN NEW.id IS NOT OLD.id OR NEW.account_id IS NOT OLD.account_id OR NEW.payload IS NOT OLD.payload BEGIN SELECT RAISE(ABORT,'immutable operation intent');END;
+    CREATE TRIGGER IF NOT EXISTS ac_operations_no_delete BEFORE DELETE ON ac_operations BEGIN SELECT RAISE(ABORT,'immutable operation intent');END;
+    CREATE TRIGGER IF NOT EXISTS ac_withdrawal_prepared_immutable BEFORE UPDATE ON ac_operations WHEN json_extract(OLD.payload,'$.format')='withdrawal-v1' AND json_extract(OLD.receipt,'$.unsigned') IS NOT NULL AND json_extract(NEW.receipt,'$.unsigned') IS NOT json_extract(OLD.receipt,'$.unsigned') BEGIN SELECT RAISE(ABORT,'immutable prepared withdrawal');END;
+    CREATE TRIGGER IF NOT EXISTS ac_withdrawal_signed_immutable BEFORE UPDATE ON ac_operations WHEN json_extract(OLD.payload,'$.format')='withdrawal-v1' AND json_extract(OLD.receipt,'$.signed') IS NOT NULL AND json_extract(NEW.receipt,'$.signed') IS NOT json_extract(OLD.receipt,'$.signed') BEGIN SELECT RAISE(ABORT,'immutable signed withdrawal');END;
+    CREATE TRIGGER IF NOT EXISTS ac_withdrawal_result_immutable BEFORE UPDATE ON ac_operations WHEN json_extract(OLD.payload,'$.format')='withdrawal-v1' AND json_extract(OLD.receipt,'$.result') IS NOT NULL AND json_extract(NEW.receipt,'$.result') IS NOT json_extract(OLD.receipt,'$.result') BEGIN SELECT RAISE(ABORT,'immutable withdrawal result');END;
+    CREATE TRIGGER IF NOT EXISTS ac_withdrawal_state_transition BEFORE UPDATE ON ac_operations WHEN json_extract(OLD.payload,'$.format')='withdrawal-v1' AND NOT ((OLD.state='reserved' AND NEW.state IN ('reserved','signed')) OR (OLD.state='signed' AND NEW.state IN ('signed','pending','complete')) OR (OLD.state='pending' AND NEW.state IN ('pending','complete')) OR (OLD.state='complete' AND NEW.state='complete')) BEGIN SELECT RAISE(ABORT,'invalid withdrawal state transition');END;
+   `);
    this.db.exec('COMMIT');this.assertConserved();
   }catch(error){try{this.db.exec('ROLLBACK');}catch{}this.db.close();throw error;}
  }
@@ -59,7 +67,7 @@ export class AccountingStore{
   if(!this.inTransaction)throw Error('Atomic posting required');
   if(typeof key!=='string'||! /^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,159}$/.test(key))throw Error('Invalid batch key');
   identifier(kind);
-  const marker=postings?.length===0&&['event-reserve','event-applied','event-rejected'].includes(kind);
+  const marker=postings?.length===0&&['event-reserve','event-applied','event-rejected','withdrawal-prepared','withdrawal-signed','withdrawal-pending'].includes(kind);
   if(!Array.isArray(postings)||(!marker&&postings.length<2)||postings.length>128)throw Error('Balanced postings required');
   let sum=0n;
   const rows=postings.map(({bucket,owner,delta})=>{ownerFor(bucket,owner);if(typeof delta!=='bigint'||delta===0n||delta>U64||delta< -U64)throw Error('Exact nonzero delta required');sum+=delta;return {bucket,owner,delta:delta.toString()};});
