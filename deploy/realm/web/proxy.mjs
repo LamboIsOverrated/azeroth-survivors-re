@@ -52,7 +52,9 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
     res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','same-origin');
     let target;
     try {target=targetFor(req.url,realmUrl);}catch{return json(res,400,{error:'Invalid request path.'});}
-    if(target.pathname==='/healthz'&&req.method==='GET')return json(res,200,{status:'ok',realm:status(),mainnetTransfers:false});
+    if(target.pathname==='/healthz'&&req.method==='GET') {
+      const realm=status();return json(res,200,{status:'ok',realm,ready:realm.state==='ready',maintenance:env.REALM_MAINTENANCE==='1',mainnetTransfers:false});
+    }
     if(target.pathname==='/readyz'&&req.method==='GET') {
       const realm=status();return json(res,realm.state==='ready'?200:503,{realm,mainnetTransfers:false});
     }
@@ -95,5 +97,7 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
     forwarded.on('error',()=>socket.destroy());forwarded.setTimeout(10000,()=>forwarded.destroy());forwarded.end();
   });
   gateway.on('close',()=>economy?.close?.());
+  gateway.requestTimeout=15000;gateway.headersTimeout=10000;gateway.keepAliveTimeout=5000;
+  gateway.maxRequestsPerSocket=100;gateway.maxConnections=500;
   return gateway;
 }

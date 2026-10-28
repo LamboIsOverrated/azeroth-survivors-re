@@ -88,7 +88,7 @@ test('mutation origin must exactly match the configured origin',async t=>{
 test('readiness names the web runtime independently of realm readiness',async t=>{
   const {url}=await fixture(t,{status:()=>({state:'initializing',message:'Preparing game data.'})});
   const response=await fetch(`${url}/healthz`);assert.equal(response.status,200);
-  assert.deepEqual(await response.json(),{status:'ok',realm:{state:'initializing',message:'Preparing game data.'},mainnetTransfers:false});
+  assert.deepEqual(await response.json(),{status:'ok',realm:{state:'initializing',message:'Preparing game data.'},ready:false,maintenance:false,mainnetTransfers:false});
   assert.equal((await fetch(`${url}/readyz`)).status,503);
 });
 test('websocket forwarding requires the exact origin and fixed ports, and preserves upstream authentication refusal',async t=>{

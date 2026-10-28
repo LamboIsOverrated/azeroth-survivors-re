@@ -34,6 +34,7 @@ jobs:
         working-directory: deploy/realm
       - name: gateway and economy checks
         run: |
+          npm run build --prefix deploy/realm
           npm test --prefix deploy
           node --test deploy/realm/web/tests/*.test.mjs deploy/realm/economy/tests/*.test.mjs
           python3 -m unittest discover -s deploy/realm/core -p 'test_*.py' -v

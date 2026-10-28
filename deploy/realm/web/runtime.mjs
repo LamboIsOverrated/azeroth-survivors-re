@@ -12,12 +12,13 @@ const realmUrl='http://127.0.0.1:8090';
 const publicOrigin=process.env.REALM_PUBLIC_URL;
 if(!publicOrigin)throw new Error('REALM_PUBLIC_URL is required.');
 await mkdir(stateRoot,{recursive:true});
-let state={state:'starting',message:'The realm is starting.'};
+const maintenance=process.env.REALM_MAINTENANCE==='1';
+let state=maintenance?{state:'maintenance',message:'The realm is temporarily closed for maintenance.'}:{state:'starting',message:'The realm is starting.'};
 let child,stopped=false,polling=false;
 const walletAsset=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.js'));
 const walletStyle=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.css'));
-const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:createEconomy});
-server.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log('Public realm gateway listening.'));
+const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:maintenance?undefined:createEconomy});
+server.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log(`Public realm gateway listening on ${server.address().port}.`));
 
 async function startRealm() {
   if(stopped)return;
@@ -38,7 +39,7 @@ async function startRealm() {
   child.on('exit',code=>{if(!stopped){console.error(`Account service exited (${code}).`);state={state:'error',message:'The account service is restarting.'};server.close();setTimeout(()=>process.exit(1),250).unref();}});
 }
 const statusTimer=setInterval(async()=>{
-  if(stopped||polling||['initializing','waiting','error'].includes(state.state))return;
+  if(stopped||maintenance||polling||['initializing','waiting','error'].includes(state.state))return;
   polling=true;
   try {
     const response=await fetch(`${realmUrl}/healthz`,{signal:AbortSignal.timeout(5000)});
@@ -49,7 +50,7 @@ const statusTimer=setInterval(async()=>{
   }catch{state={state:'world-unavailable',message:'The realm is starting or restarting. Saved characters remain on the server.'};}
   finally{polling=false;}
 },5000);
-startRealm().catch(error=>{console.error('Realm startup failed:',error.code||error.name);state={state:'error',message:'The realm could not start. The operator can inspect startup logs.'};});
+if(!maintenance)startRealm().catch(error=>{console.error('Realm startup failed:',error.code||error.name);state={state:'error',message:'The realm could not start. The operator can inspect startup logs.'};});
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{
   stopped=true;clearInterval(statusTimer);child?.kill('SIGTERM');server.close();
   setTimeout(()=>process.exit(0),10000).unref();
