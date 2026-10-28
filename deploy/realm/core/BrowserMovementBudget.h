@@ -7,6 +7,20 @@
 
 namespace RealmBrowser
 {
+inline double FallElevation(double seconds, bool slowFall)
+{
+    // Pinned Movement/util.cpp constants and jump velocity. Unlike that helper,
+    // both the terminal time and terminal segment honor the slow-fall terminal.
+    constexpr double gravity = 19.29110527038574;
+    constexpr double initial = -7.955547;
+    const double terminal = slowFall ? 7.0 : 60.148003;
+    const double terminalTime = (terminal - initial) / gravity;
+    if (seconds <= terminalTime)
+        return seconds * (initial + .5 * gravity * seconds);
+    return terminalTime * (initial + .5 * gravity * terminalTime)
+           + terminal * (seconds - terminalTime);
+}
+
 class MovementBudget
 {
     bool initialized = false;
@@ -67,7 +81,7 @@ public:
             origin = previousZ;
         }
         const double seconds = static_cast<std::uint32_t>(now - begin) / 1000.0;
-        // The caller supplies the actual core fall model with authoritative aura state.
+        // The caller supplies the fall model with authoritative aura state.
         const double ceiling = origin - fall(seconds) + 2.0;
         return std::isfinite(ceiling) && z <= ceiling;
     }

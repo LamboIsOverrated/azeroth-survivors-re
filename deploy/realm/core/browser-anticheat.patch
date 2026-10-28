@@ -99,7 +99,7 @@
      // if knockbacked
      if (_me->IsLaunched())
          return true;
-@@ -972,6 +964,60 @@
+@@ -972,6 +964,69 @@
      }
  
      return movementInfo.fallTime != 0 || movementInfo.jump.zspeed != 0.0f;
@@ -143,7 +143,9 @@
 +        return reject("movement-through-map-collision");
 +
 +    float floor = _me->GetMap()->GetHeight(mi.pos.x, mi.pos.y, mi.pos.z);
-+    const bool water = _me->GetTerrain()->IsInWater(mi.pos.x, mi.pos.y, mi.pos.z);
++    const auto liquid = _me->GetTerrain()->getLiquidStatus(mi.pos.x, mi.pos.y, mi.pos.z, MAP_ALL_LIQUIDS, nullptr);
++    // IsInWater() also returns true for ABOVE_WATER in this pinned core.
++    const bool water = !!(liquid & (LIQUID_MAP_IN_WATER | LIQUID_MAP_UNDER_WATER));
 +    if (_me->HasAuraType(SPELL_AURA_WATER_WALK) || _me->HasAuraType(SPELL_AURA_GHOST))
 +        floor = std::max(floor, _me->GetTerrain()->GetWaterLevel(mi.pos.x, mi.pos.y, mi.pos.z));
 +    const bool surface = water || (std::isfinite(floor) && floor > -50000.f &&
@@ -151,9 +153,16 @@
 +    if (!water && std::isfinite(floor) && floor > -50000.f && mi.pos.z < floor - 2.f)
 +        return reject("below-map-surface");
 +    const bool slowFall = _me->HasAuraType(SPELL_AURA_FEATHER_FALL);
++    if (slowFall != _browserSlowFall)
++    {
++        _browserSlowFall = slowFall;
++        _browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), false, true,
++                           [](double) { return 0.0; });
++    }
 +    if (!_browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), surface, false,
 +            [slowFall](double seconds) {
-+                return ::Movement::computeFallElevation(float(seconds), slowFall, -7.955547f);
++                return slowFall ? RealmBrowser::FallElevation(seconds, true) :
++                    ::Movement::computeFallElevation(float(seconds), false, -7.955547f);
 +            }))
 +        return reject("airborne-gravity-envelope");
 +    return true;
@@ -170,16 +179,17 @@
  
  #include <vector>
  #include <map>
-@@ -39,6 +40,8 @@
+@@ -39,6 +40,9 @@
          Player * const _me;
  
          float _totalDistanceTraveled;
 +        RealmBrowser::MovementBudget _browserBudget;
 +        RealmBrowser::AirborneCeiling _browserAir;
++        bool _browserSlowFall = false;
  
          // true when the previous tick of anticheat tests was aborted due to the session controlling a unit other than its own player (mind control)
          bool _wasMovingOther;
-@@ -138,6 +141,7 @@
+@@ -138,6 +142,7 @@
          void OnExplore(AreaTableEntry const* p);
          void OnTransport(Player* plMover, ObjectGuid transportGuid);
  

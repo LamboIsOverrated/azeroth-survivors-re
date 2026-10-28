@@ -38,4 +38,9 @@ int main()
     assert(air.Accept(6100, 1000, 1000, false, true, fall));
     assert(air.Accept(6200, 1000.5, 1000, false, false, fall));
     assert(!air.Accept(6201, std::numeric_limits<double>::infinity(), 1000, false, false, fall));
+    assert(std::abs(RealmBrowser::FallElevation(10, true) -
+                    RealmBrowser::FallElevation(9, true) - 7.0) < .00001);
+    assert(std::abs(RealmBrowser::FallElevation(10, false) -
+                    RealmBrowser::FallElevation(9, false) - 60.148003) < .00001);
+    assert(RealmBrowser::FallElevation(.4, true) < 0); // jumping still rises first
 }

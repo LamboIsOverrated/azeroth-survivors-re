@@ -106,3 +106,12 @@ an enforcement consumer. The carry does not attribute its new movement policy to
 stock CMaNGOS behavior. Full image compilation and isolated actual-world acceptance
 are independent release gates. Activation stays explicitly disabled until those
 gates pass; no deployment or real-world protection is established by source tests.
+
+Two additional exact-source seams are handled explicitly in the carry. Pinned
+`Movement/util.cpp::computeFallElevation` selects a slow-fall terminal but its
+terminal-time/terminal-segment expressions still use normal terminal velocity;
+the new envelope preserves its constants and honors the seven-yard-per-second
+slow-fall terminal. Pinned `GridMap.cpp::TerrainInfo::IsInWater` treats any nonzero
+liquid status as water, including `LIQUID_MAP_ABOVE_WATER`; the carry instead
+requires explicit in/under-water bits. These corrections are checked as source
+mechanisms and modeled physics, with actual browser/world acceptance still pending.

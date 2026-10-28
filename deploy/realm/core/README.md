@@ -192,8 +192,10 @@ comes from the server's unit state. Resets/exemptions come from server teleport,
 taxi, knockback, actual transport and spline state, never incoming movement flags.
 It rejects unpermitted flight/movement flags, map collision crossings and positions
 below the server's map surface. An airborne ceiling uses the actual core fall
-function and authoritative feather-fall aura, with two yards of tolerance; surface
-contact is checked against server map/water data. Existing teleport checks also
+function for normal falls and its pinned constants with a corrected seven-yard
+terminal speed for feather fall. Server aura changes reset only the air baseline;
+two yards of tolerance remain. Surface contact uses the server's map and explicit
+in/under-water status bits, excluding the core API's above-water state. Existing teleport checks also
 remain mandatory. Rejections leave character position unchanged and record bounded
 reason notifications through the existing anticheat counters/log database.
 
