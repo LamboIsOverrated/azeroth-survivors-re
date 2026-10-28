@@ -383,7 +383,7 @@ async fn admin_creates_player_who_can_fetch_hidden_game_credentials() {
         "/account/password",
         "first login forces a password change"
     );
-    let alice = r.cookie().unwrap();
+    let mut alice = r.cookie().unwrap();
 
     // …and "forces" means it: until the password is changed, the session opens the change page
     // and nothing else. This assertion is the fix for a real hole — the redirect above used to be
@@ -428,6 +428,9 @@ async fn admin_creates_player_who_can_fetch_hidden_game_credentials() {
     .await;
     assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
     assert_eq!(r.location(), "/");
+    alice = r
+        .cookie()
+        .expect("password change replaces the current session");
 
     // A player still cannot open the admin panel.
     assert_eq!(
@@ -1272,4 +1275,84 @@ async fn password_reset_displays_secret_once_without_putting_it_in_a_url() {
         .await
         .body
         .contains(password));
+}
+
+#[tokio::test]
+async fn password_change_replaces_current_cookie_and_never_restores_rotation_cookie() {
+    for rotate_on_change in [false, true] {
+        let h = harness().await;
+        let old_cookie = run_setup(&h).await;
+        let old_token = old_cookie.split_once('=').unwrap().1;
+        let old_session = wenilla_realm::session::lookup(&h.state.db, old_token)
+            .await
+            .unwrap()
+            .unwrap();
+        let page = send(&h.app, get("/account/password", Some(&old_cookie))).await;
+        let csrf = csrf_of(&page.body);
+        if rotate_on_change {
+            sqlx::query("UPDATE sessions SET rotated_at=0")
+                .execute(&h.state.db)
+                .await
+                .unwrap();
+        }
+        let response = send(
+            &h.app,
+            form(
+                "/account/password",
+                Some(&old_cookie),
+                &[
+                    ("_csrf", &csrf),
+                    ("current", "correct horse battery"),
+                    ("new", "replacement private password"),
+                    ("confirm", "replacement private password"),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::SEE_OTHER);
+        for path in ["/api/identity", "/ws/8085"] {
+            assert_eq!(
+                send(&h.app, get(path, Some(&old_cookie))).await.status,
+                StatusCode::UNAUTHORIZED,
+                "a copied current cookie must be revoked after changing the password"
+            );
+        }
+        assert!(
+            !wenilla_realm::session::still_valid(
+                &h.state.db,
+                old_session.id,
+                old_session.user.id,
+                &old_session.csrf_token
+            )
+            .await
+            .unwrap(),
+            "existing sockets must fail their stable-session monitor"
+        );
+        let replacement = response
+            .cookie()
+            .expect("password change issues a fresh cookie");
+        assert_ne!(replacement, old_cookie);
+        let cookies = response
+            .headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter(|v| v.to_str().unwrap().starts_with("wr_session="))
+            .count();
+        assert_eq!(
+            cookies, 1,
+            "middleware must not append its earlier rotation cookie over the replacement"
+        );
+        assert_eq!(
+            send(&h.app, get("/api/identity", Some(&replacement)))
+                .await
+                .status,
+            StatusCode::OK
+        );
+        let replacement_session =
+            wenilla_realm::session::lookup(&h.state.db, replacement.split_once('=').unwrap().1)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_ne!(replacement_session.csrf_token, old_session.csrf_token);
+    }
 }

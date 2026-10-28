@@ -126,6 +126,30 @@ pub async fn create_for_password(
     Ok((inserted.rows_affected() == 1).then_some(token))
 }
 
+/// Replace every old session inside the credential-change transaction. No previous-token
+/// grace survives this security boundary, and the replacement gets a fresh CSRF nonce.
+pub(crate) async fn replace_password_session(
+    conn: &mut sqlx::SqliteConnection,
+    current: &Session,
+) -> Result<String> {
+    let token = new_token();
+    let t = now();
+    let inserted = sqlx::query("INSERT INTO sessions (token_hash,user_id,csrf_token,created_at,rotated_at,last_seen,expires_at,ip,user_agent) \
+        SELECT ?,user_id,?,?,?,?,?,ip,user_agent FROM sessions WHERE id=? AND user_id=? AND csrf_token=? AND expires_at>?")
+        .bind(hash(&token)).bind(new_token()).bind(t).bind(t).bind(t).bind(t+MAX_AGE_SECS)
+        .bind(current.id).bind(current.user.id).bind(&current.csrf_token).bind(t).execute(&mut *conn).await?;
+    anyhow::ensure!(
+        inserted.rows_affected() == 1,
+        "password change session no longer exists"
+    );
+    sqlx::query("DELETE FROM sessions WHERE user_id=? AND token_hash<>?")
+        .bind(current.user.id)
+        .bind(hash(&token))
+        .execute(conn)
+        .await?;
+    Ok(token)
+}
+
 pub async fn delete_by_token(db: &SqlitePool, token: &str) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE token_hash = ? OR (previous_token_hash = ? AND previous_valid_until > ?)")
         .bind(hash(token))
@@ -347,7 +371,16 @@ pub async fn require_session(
         req.extensions_mut().insert(session);
         next.run(req).await
     };
-    if let Some(token) = fresh {
+    let replaced_cookie = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.starts_with("wr_session="))
+        });
+    if let Some(token) = fresh.filter(|_| !replaced_cookie) {
         let c = cookie(token, !state.cfg.cookie_insecure);
         if let Ok(v) = HeaderValue::from_str(&c.to_string()) {
             resp.headers_mut().append(header::SET_COOKIE, v);

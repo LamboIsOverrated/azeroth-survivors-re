@@ -82,8 +82,9 @@ impl Config {
         self.state_dir.join("realm.sqlite")
     }
 
-    /// Host part of `public_url` — what goes into `realmlist.address` (a label on the web: the
-    /// client dials the page's own origin, `benilla-protocol::transport::web`).
+    /// Browser bootstrap host label only: the browser dials its page's own WebSocket origin.
+    /// The private core owns `realmlist.address`; never write this possibly long public host
+    /// into the game database's fixed-width address field.
     pub fn public_host(&self) -> String {
         url::Url::parse(&self.public_url)
             .ok()

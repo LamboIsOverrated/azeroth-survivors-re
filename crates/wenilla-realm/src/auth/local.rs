@@ -131,7 +131,7 @@ async fn change_password(
     session: &Session,
     expected_hash: &str,
     password: &str,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<String>> {
     let password = password.to_owned();
     let hash = password_work(move || hash_password(&password)).await??;
     let mut tx = db.begin().await?;
@@ -142,16 +142,11 @@ async fn change_password(
         .bind(session.id).bind(session.user.id).bind(&session.csrf_token).bind(now())
         .execute(&mut *tx).await?;
     if changed.rows_affected() != 1 {
-        return Ok(false);
+        return Ok(None);
     }
-    sqlx::query("DELETE FROM sessions WHERE user_id=? AND NOT(id=? AND csrf_token=?)")
-        .bind(session.user.id)
-        .bind(session.id)
-        .bind(&session.csrf_token)
-        .execute(&mut *tx)
-        .await?;
+    let token = session::replace_password_session(&mut tx, session).await?;
     tx.commit().await?;
-    Ok(true)
+    Ok(Some(token))
 }
 
 pub async fn reset_admin_credentials(db: &SqlitePool) -> anyhow::Result<()> {
@@ -381,6 +376,7 @@ async fn password_submit(
     session: Session,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    jar: CookieJar,
     Form(f): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     crate::csrf::verify(&session, &f._csrf)?;
@@ -411,9 +407,9 @@ async fn password_submit(
         return Ok(fail(e));
     }
     let hash = row.expect("verified credential").0;
-    if !change_password(&state.db, &session, &hash, &f.new).await? {
+    let Some(token) = change_password(&state.db, &session, &hash, &f.new).await? else {
         return Ok(fail("credentials changed — sign in again"));
-    }
+    };
     audit::log(
         &state.db,
         Some(session.user.id),
@@ -423,10 +419,14 @@ async fn password_submit(
         None,
     )
     .await;
-    Ok(Redirect::to(if session.user.is_admin() {
-        "/admin"
-    } else {
-        "/"
-    })
-    .into_response())
+    let jar = jar.add(session::cookie(token, !state.cfg.cookie_insecure));
+    Ok((
+        jar,
+        Redirect::to(if session.user.is_admin() {
+            "/admin"
+        } else {
+            "/"
+        }),
+    )
+        .into_response())
 }

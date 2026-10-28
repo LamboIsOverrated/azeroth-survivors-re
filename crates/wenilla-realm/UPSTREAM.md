@@ -54,8 +54,10 @@ preserves the session identity. Provisioning refuses unknown existing core
 accounts; restore matching web state or recover them explicitly rather than
 silently resetting their password and claiming ownership.
 
-Password changes compare the credential hash again at commit time and revoke all
-other sessions in the same transaction. Resets revoke every session atomically;
+Password changes compare the credential hash again at commit time and replace all
+old sessions atomically, including the current session, with a fresh cookie and
+CSRF nonce. No previous-token grace survives. Middleware does not overwrite the
+replacement with a rotation cookie created earlier in the request. Resets revoke every session atomically;
 password-based login inserts a session only while its verified hash remains
 current. Reset passwords are shown once in a no-store HTML response, never in a
 redirect URL. SOAP transport errors and empty replies fail closed; ambiguous
