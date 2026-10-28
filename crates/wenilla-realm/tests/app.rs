@@ -1044,10 +1044,29 @@ async fn identity_is_authenticated_no_store_and_contains_no_game_credentials() {
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
     let identity: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-    assert_eq!(
-        identity,
-        serde_json::json!({"id": 1, "username": "boss", "isAdmin": true})
-    );
+    assert_eq!(identity["id"], 1);
+    assert_eq!(identity["username"], "boss");
+    assert_eq!(identity["isAdmin"], true);
+    let binding = identity["sessionId"]
+        .as_str()
+        .expect("opaque session binding");
+    assert_eq!(binding.len(), 64);
+    assert!(binding.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    sqlx::query("UPDATE sessions SET rotated_at = ?")
+        .bind(db::now() - 86401)
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    let rotated = send(&h.app, get("/api/identity", Some(&cookie))).await;
+    let rotated_identity: serde_json::Value = serde_json::from_str(&rotated.body).unwrap();
+    assert_eq!(rotated_identity["sessionId"], identity["sessionId"]);
+    let other = wenilla_realm::session::create(&h.state.db, 1, None, None)
+        .await
+        .unwrap();
+    let other_cookie = format!("wr_session={other}");
+    let other = send(&h.app, get("/api/identity", Some(&other_cookie))).await;
+    let other_identity: serde_json::Value = serde_json::from_str(&other.body).unwrap();
+    assert_ne!(other_identity["sessionId"], identity["sessionId"]);
 }
 
 #[tokio::test]

@@ -46,27 +46,31 @@ if (location.pathname === '/play' && !document.querySelector('#realm-wallet-laun
   const dialog = document.createElement('dialog'); dialog.id='realm-wallet-dialog'; dialog.setAttribute('aria-labelledby','realm-wallet-title');
   dialog.innerHTML = `<div class="realm-wallet-top"><span class="realm-wallet-eyebrow">TEST REALM</span><button data-action="close" aria-label="Close wallet">✕</button></div>
     <h2 id="realm-wallet-title">Your realm wallet</h2>
+    <p>The world keeps running while this panel is open.</p>
     <p class="realm-wallet-warning">TEST only · Nonredeemable · No carryover to launch</p>
     <p>Characters, items and TEST funds may be reset before launch. Wallet linking is optional for test play.</p>
     <div class="realm-wallet-actions"><button data-action="phantom">Link Phantom</button><button data-action="solflare">Link Solflare</button></div>
     <p data-field="address" class="realm-wallet-address">No linked wallet.</p>
-    <section><h3>Account TEST vault</h3><strong data-field="vault">—</strong><p>This separate account vault cannot be spent by characters or redeemed. It does not show in-game money.</p><button data-action="allocate" hidden>Claim one-time TEST allocation</button></section>
     <section><h3>In-game TEST currency (last saved)</h3><p data-field="character">Loading authoritative character balances…</p><ul data-field="characters"></ul></section>
-    <section><h3>Onchain wallet · display only</h3><p data-field="chain">Link a wallet to view chain balances.</p><p data-field="mint">Launch token not configured.</p></section>
-    <p class="realm-wallet-warning">Deposits, withdrawals and swaps are disabled.</p>
-    <details><summary>Recent account vault activity</summary><ol data-field="history"></ol></details>
+    <section><h3>Your Solana wallet</h3><p data-field="chain">Link a wallet to view chain balances.</p><p data-field="mint">Launch coin not configured.</p></section>
+    <p class="realm-wallet-warning">Deposits and withdrawals are unavailable during this test.</p>
+    <div data-realm-market></div>
+    <details data-field="testTools" hidden><summary>Test tools</summary><section><h3>Account TEST vault</h3><strong data-field="vault">—</strong><p>These test units are separate from character money and cannot be redeemed.</p><button data-action="allocate" hidden>Claim one-time TEST allocation</button></section><ol data-field="history"></ol></details>
     <p data-field="status" role="status" aria-live="polite"></p>
     <button data-action="refresh">Refresh balances</button>
     <p class="realm-wallet-footnote">Wallet signatures link your wallet only. Never share a recovery phrase or private key.</p>`;
   document.body.append(launcher,dialog);
+  import('/realm-market.bundle.js').catch(()=>{});
   const field = name => dialog.querySelector(`[data-field="${name}"]`);
   let busy = false;
   const status = text => { field('status').textContent=text; };
-  function controls(value) { busy=value; for(const button of dialog.querySelectorAll('button:not([data-action="close"])')) button.disabled=value; }
+  function controls(value) { busy=value; for(const button of dialog.querySelectorAll('button[data-action]:not([data-action="close"])')) if(!button.closest('[data-realm-market]'))button.disabled=value; }
   async function refresh() {
     const state = await api('/state');
     field('vault').textContent=`${state.vault.units} TEST vault units`;
+    field('testTools').hidden=!state.config.testAllocationAvailable&&state.vault.units==='0';
     field('address').textContent=state.wallet.address ? `Linked wallet: ${state.wallet.address}` : 'No linked wallet.';
+    dialog.querySelector('[data-realm-market]').dispatchEvent(new Event('realm-market:refresh'));
     field('characters').replaceChildren();
     field('character').textContent=state.characterMoney.available ? 'Realm server snapshot. Online character changes may not appear until saved. TEST money is nonredeemable.' : state.characterMoney.reason;
     if (state.characterMoney.available) {
@@ -74,7 +78,7 @@ if (location.pathname === '/play' && !document.querySelector('#realm-wallet-laun
       if (!state.characterMoney.characters.length) field('character').textContent='No characters on this realm account yet.';
     }
     dialog.querySelector('[data-action="allocate"]').hidden=!state.config.testAllocationAvailable;
-    field('mint').textContent=state.config.mint ? `Configured mint: ${state.config.mint} · not validated for settlement` : 'Launch token not configured.';
+    field('mint').textContent=state.config.mint ? `Launch coin address: ${state.config.mint}` : 'Your launch coin is not connected yet.';
     const history=await api('/history'); field('history').replaceChildren();
     for(const entry of history.entries) { const item=document.createElement('li'); item.textContent=`${entry.units} TEST · ${entry.kind} · ${new Date(entry.createdAt).toLocaleString()}`; field('history').append(item); }
     if (!history.entries.length) { const item=document.createElement('li'); item.textContent='No account vault activity.'; field('history').append(item); }

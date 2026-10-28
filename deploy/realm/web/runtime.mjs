@@ -4,6 +4,7 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createWebGateway} from './proxy.mjs';
 import {createEconomy} from '../economy/api.mjs';
+import {createMarket} from '../market/index.mjs';
 import {realmState,clientDataComplete} from './state.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
@@ -17,21 +18,38 @@ let state=maintenance?{state:'maintenance',message:'The realm is temporarily clo
 let child,stopped=false,polling=false;
 const walletAsset=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.js'));
 const walletStyle=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.css'));
-const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:maintenance?undefined:createEconomy});
+const marketAsset=await readFile(resolve(here,'../market/public/realm-market.bundle.js'));
+const marketStyle=await readFile(resolve(here,'../market/public/realm-market.bundle.css'));
+const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,marketAsset,marketStyle,gatePlayUntilReady:true,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:maintenance?undefined:createEconomy,marketFactory:maintenance?undefined:createMarket});
 server.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log(`Public realm gateway listening on ${server.address().port}.`));
 
+function preparationFailed() {
+  state={state:'error',message:'The world could not finish preparing. Please try again later.'};
+  server.close();setTimeout(()=>process.exit(1),250).unref();
+}
+function python(script,args=[],extraEnv={}) {
+  return new Promise(resolveExit=>{
+    child=spawn('python3',[script,...args],{env:{...process.env,...extraEnv},stdio:'inherit'});
+    child.on('error',()=>resolveExit(-1));child.on('exit',resolveExit);
+  });
+}
 async function startRealm() {
   if(stopped)return;
-  const data=process.env.CLIENT_DATA||resolve(stateRoot,'client/Data');
+  const data=process.env.CLIENT_DATA||resolve(stateRoot,'client/DerivedData');
+  const original=process.env.CLIENT_SOURCE_DATA||resolve(stateRoot,'client/Data');
   if(!await clientDataComplete(data)) {
-    if(process.env.DOWNLOAD_GAME_DATA!=='true') {state={state:'waiting',message:'The realm is waiting for its client data.'};return;}
-    state={state:'initializing',message:'Preparing the game files for first use. Character creation will open when the realm is ready.'};
-    const exit=await new Promise(resolveExit=>{
-      child=spawn('python3',[resolve(here,'prepare_data.py')],{env:{...process.env,CLIENT_DATA:data},stdio:'inherit'});
-      child.on('error',()=>resolveExit(-1));child.on('exit',resolveExit);
-    });
-    if(stopped)return;
-    if(exit!==0) {state={state:'error',message:'Game data preparation did not finish. The operator can resume initialization.'};return;}
+    if(!await clientDataComplete(original)) {
+      if(process.env.DOWNLOAD_GAME_DATA!=='true') {state={state:'waiting',message:'The realm is waiting for its game files.'};return;}
+      state={state:'initializing',message:'Preparing the game files for first use. Character creation will open when the realm is ready.'};
+      const exit=await python(resolve(here,'prepare_data.py'),[],{CLIENT_DATA:original});
+      if(stopped)return;if(exit!==0)return preparationFailed();
+    }
+    if(data!==original) {
+      state={state:'initializing',message:'Preparing the world for first use.'};
+      const exit=await python(resolve(here,'../core/repair_client.py'),['--source',original,'--output',data]);
+      if(stopped)return;if(exit!==0)return preparationFailed();
+    }
+    if(!await clientDataComplete(data))return preparationFailed();
   }
   state={state:'starting',message:'Starting the account and browser game service.'};
   child=spawn(process.env.REALM_BINARY||'/app/bin/wenilla-realm',[],{env:{...process.env,REALM_BIND:'127.0.0.1:8090',REALM_STATE_DIR:stateRoot,CLIENT_DATA:data},stdio:'inherit'});
@@ -50,7 +68,7 @@ const statusTimer=setInterval(async()=>{
   }catch{state={state:'world-unavailable',message:'The realm is starting or restarting. Saved characters remain on the server.'};}
   finally{polling=false;}
 },5000);
-if(!maintenance)startRealm().catch(error=>{console.error('Realm startup failed:',error.code||error.name);state={state:'error',message:'The realm could not start. The operator can inspect startup logs.'};});
+if(!maintenance)startRealm().catch(error=>{console.error('Realm startup failed:',error.code||error.name);preparationFailed();});
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{
   stopped=true;clearInterval(statusTimer);child?.kill('SIGTERM');server.close();
   setTimeout(()=>process.exit(0),10000).unref();

@@ -36,9 +36,10 @@ jobs:
         run: |
           npm run build --prefix deploy/realm
           npm test --prefix deploy
-          node --test deploy/realm/web/tests/*.test.mjs deploy/realm/economy/tests/*.test.mjs
+          npm test --prefix deploy/realm
           python3 -m unittest discover -s deploy/realm/core -p 'test_*.py' -v
           python3 -m unittest discover -s deploy/realm/web/tests -p 'test_*.py' -v
+          python3 -m unittest discover -s deploy/realm/ops/tests -v
       - name: realm account and relay checks
         run: cargo test --locked -p wenilla-realm
       - name: realm formatting
@@ -96,7 +97,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="mmo-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           printf 'Original Classic browser client and account service. Source commit: %s. No game assets, accounts, or secrets. MIT/Apache licenses included.\n' "$GITHUB_SHA" > release-notes.txt
-          gh release create "$tag" mmo-runtime.tar.gz mmo-runtime.tar.gz.sha256 --target "$GITHUB_SHA" --title "Browser MMO runtime ${GITHUB_SHA:0:12}" --notes-file release-notes.txt --prerelease
+          gh release create "$tag" mmo-runtime.tar.gz mmo-runtime.tar.gz.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Browser MMO runtime ${GITHUB_SHA:0:12}" --notes-file release-notes.txt --prerelease
           printf 'Runtime tag: %s\n\n' "$tag" >> "$GITHUB_STEP_SUMMARY"
           cat mmo-runtime.tar.gz.sha256 >> "$GITHUB_STEP_SUMMARY"

@@ -29,8 +29,14 @@ fn no_store(body: serde_json::Value) -> Response {
 }
 
 async fn identity(session: Session) -> Response {
+    use sha2::{Digest, Sha256};
+    // A stable, opaque binding for short-lived wallet orders. Cookie rotation preserves
+    // the nonce; logout/password replacement changes it. Never return either raw secret.
+    let binding = hex::encode(Sha256::digest(
+        format!("realm-wallet-session:{}:{}", session.id, session.csrf_token).as_bytes(),
+    ));
     no_store(
-        serde_json::json!({"id": session.user.id, "username": session.user.username, "isAdmin": session.user.is_admin()}),
+        serde_json::json!({"id": session.user.id, "username": session.user.username, "isAdmin": session.user.is_admin(), "sessionId": binding}),
     )
 }
 

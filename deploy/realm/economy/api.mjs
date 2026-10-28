@@ -115,5 +115,6 @@ export function createEconomy({identity, getCharacters, dbPath = '/state/economy
     }
   };
   handler.close = () => ledger.close();
+  handler.walletFor = id => ledger.wallet(id);
   return handler;
 }

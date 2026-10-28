@@ -17,11 +17,16 @@ const headersFor=(req,env)=>{
   return headers;
 };
 const json=(res,code,value)=>{res.writeHead(code,{'content-type':'application/json','cache-control':'private, no-store'});res.end(JSON.stringify(value));};
+function waitingPage(res,message) {
+  const safe=String(message).replace(/[&<>"']/g,value=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[value]));
+  res.writeHead(503,{'content-type':'text/html; charset=utf-8','cache-control':'private, no-store','retry-after':'10','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"});
+  res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Classic PvP Realm</title><style>body{margin:0;background:#101914;color:#e8e4d6;font:17px/1.6 system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}main{max-width:38rem;padding:2rem}h1{font-size:2rem;color:#cdb779}small{color:#a7b3a9}</style><main><small>CLASSIC PVP REALM · PRIVATE TEST</small><h1>Preparing the world</h1><p>${safe}</p><p>This page will refresh when the world is available.</p><small>Test progression and currency stay separate from the future live realm.</small></main></html>`);
+}
 const targetFor=(raw,base)=>{
   if(typeof raw!=='string'||!raw.startsWith('/')||raw.startsWith('//')||raw.includes('\\'))throw new Error('Invalid request path.');
   const path=new URL(raw,'http://local');const target=new URL(base);target.pathname=path.pathname;target.search=path.search;return target;
 };
-export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,economyFactory,dbPath,env={},fetchImpl=fetch,status=()=>({state:'starting',message:'The realm is starting.'}),walletAsset,walletStyle}={}) {
+export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,economyFactory,marketFactory,dbPath,env={},fetchImpl=fetch,status=()=>({state:'starting',message:'The realm is starting.'}),walletAsset,walletStyle,marketAsset,marketStyle,gatePlayUntilReady=false}={}) {
   const configuredOrigin=new URL(publicOrigin).origin;
   if(publicOrigin!==configuredOrigin)throw new Error('A single public origin without a path is required.');
   const publicResponses=new WeakMap(),requestCookies=new WeakMap();
@@ -43,13 +48,14 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
     if(!response.ok){await response.body?.cancel();return null;}
     const who=await response.json();
     if(!Number.isSafeInteger(who?.id)||who.id<=0||typeof who.username!=='string'||typeof who.isAdmin!=='boolean')return null;
-    return {id:who.id,username:who.username,isAdmin:who.isAdmin};
+    return {id:who.id,username:who.username,isAdmin:who.isAdmin,...(typeof who.sessionId==='string'&&/^[a-f0-9]{64}$/.test(who.sessionId)?{sessionId:who.sessionId}:{})};
   };
   const getCharacters=async req=>{const response=await realmRequest(req,'/api/character-balances');if(!response.ok){await response.body?.cancel();throw new Error('Character balances unavailable.');}return response.json();};
   const economy=economyFactory?.({identity,getCharacters,dbPath,env,fetchImpl});
+  const market=marketFactory?.({identity,resolveWallet:id=>economy?.walletFor?.(id)??null,env,fetchImpl});
   const gateway=createServer(async(req,res)=>{
     publicResponses.set(req,res);
-    res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','same-origin');
+    res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','same-origin');res.setHeader('x-frame-options','DENY');
     let target;
     try {target=targetFor(req.url,realmUrl);}catch{return json(res,400,{error:'Invalid request path.'});}
     if(target.pathname==='/healthz'&&req.method==='GET') {
@@ -58,9 +64,20 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
     if(target.pathname==='/readyz'&&req.method==='GET') {
       const realm=status();return json(res,realm.state==='ready'?200:503,{realm,mainnetTransfers:false});
     }
+    if(gatePlayUntilReady&&req.method==='GET'&&['/','/login','/play'].includes(target.pathname)) {
+      const realm=status();if(realm.state!=='ready')return waitingPage(res,realm.message);
+    }
     if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.headers.origin!==configuredOrigin)return json(res,403,{error:'This request must come from the game page.'});
     if(req.method==='GET'&&((target.pathname==='/realm-wallet.bundle.js'&&walletAsset)||(target.pathname==='/realm-wallet.bundle.css'&&walletStyle))) {
       const css=target.pathname.endsWith('.css');res.writeHead(200,{'content-type':css?'text/css':'text/javascript','cache-control':'private, no-cache'});return res.end(css?walletStyle:walletAsset);
+    }
+    if(req.method==='GET'&&((target.pathname==='/realm-market.bundle.js'&&marketAsset)||(target.pathname==='/realm-market.bundle.css'&&marketStyle))) {
+      const css=target.pathname.endsWith('.css');res.writeHead(200,{'content-type':css?'text/css':'text/javascript','cache-control':'private, no-cache'});return res.end(css?marketStyle:marketAsset);
+    }
+    if(target.pathname==='/api/market'||target.pathname.startsWith('/api/market/')) {
+      res.setHeader('cache-control','private, no-store');
+      try{if(market&&await market(req,res))return;}catch{if(!res.headersSent)return json(res,503,{error:'The coin exchange is temporarily unavailable.'});return res.destroy();}
+      return json(res,503,{error:'The coin exchange is unavailable.'});
     }
     if(target.pathname==='/api/economy'||target.pathname.startsWith('/api/economy/')) {
       res.setHeader('cache-control','private, no-store');

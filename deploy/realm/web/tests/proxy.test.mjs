@@ -122,3 +122,8 @@ test('wallet JavaScript and CSS use their correct types without forwarding them 
   }
   assert.equal(seen.length,0);
 });
+test('unready play pages show an honest waiting screen and never boot a partial world',async t=>{
+  const {url,seen}=await fixture(t,{gatePlayUntilReady:true,status:()=>({state:'world-initializing',message:'Preparing <world> files.'})});
+  const response=await fetch(`${url}/play`);assert.equal(response.status,503);assert.match(response.headers.get('content-type'),/text\/html/);
+  const html=await response.text();assert.match(html,/Preparing &lt;world&gt; files\./);assert.doesNotMatch(html,/<canvas/);assert.equal(seen.length,0);
+});
