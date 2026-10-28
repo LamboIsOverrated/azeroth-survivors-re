@@ -34,3 +34,6 @@ mod browser_entry_state;
 #[cfg(test)]
 #[path = "../../../src/player/browser_movement_clock.rs"]
 mod browser_movement_clock;
+#[cfg(test)]
+#[path = "../../../src/net/web_movement_guard.rs"]
+mod browser_world_guard;
