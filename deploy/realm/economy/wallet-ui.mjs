@@ -59,7 +59,8 @@ if (['/', '/play'].includes(location.pathname) && !document.querySelector('#real
     <p data-field="status" role="status" aria-live="polite"></p>
     <button data-action="refresh">Refresh balances</button>
     <p class="realm-wallet-footnote">Wallet signatures link your wallet only. Never share a recovery phrase or private key.</p>`;
-  document.body.append(launcher,dialog);
+  (document.querySelector('#bar')||document.body).append(launcher);
+  document.body.append(dialog);
   import('/realm-market.bundle.js').catch(()=>{});
   const field = name => dialog.querySelector(`[data-field="${name}"]`);
   let busy = false;

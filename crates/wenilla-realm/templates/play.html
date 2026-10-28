@@ -6,14 +6,19 @@
 <title>Azeroth TEST PvP</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
-  #benilla { display: block; width: 100vw; height: 100vh; }
-  #bar { position: fixed; top: 0; right: 0; padding: .3rem .6rem; font: 12px system-ui, sans-serif; color: #999; background: rgba(0,0,0,.55); border-bottom-left-radius: 6px; z-index: 10; }
+  body { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+  #game-surface { grid-row: 2; position: relative; min-height: 0; min-width: 0; overflow: hidden; }
+  #benilla { display: block; width: 100%; height: 100%; }
+  #bar { grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: .25rem; padding: .35rem .6rem; overflow-x: auto; white-space: nowrap; font: 12px system-ui, sans-serif; color: #aaa; background: #101713; z-index: 10; }
+  #bar .realm-player { margin-right: auto; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
+  #bar form { margin: 0; }
   #bar a, #bar button { color: #ddd; background: none; border: 0; cursor: pointer; font: inherit; margin-left: .6rem; text-decoration: underline; }
   /* The notifications bell (web/bridge.js `wenilla.notify`) — an icon, so no underline, and
      dimmed until the browser has actually granted the permission. */
   #bar #bell { font-size: 14px; text-decoration: none; opacity: .55; }
   #bar #bell.on { opacity: 1; }
-  #msg { position: fixed; inset: 0; display: grid; place-items: center; color: #ccc; font: 16px system-ui, sans-serif; background: #000; }
+  #realm-test-notice { grid-row: 3; padding: 4px 8px; background: #352400; color: #ffe499; font: 12px/1.4 system-ui, sans-serif; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; color: #ccc; font: 16px system-ui, sans-serif; background: #000; }
   #msg.hidden { display: none; }
 </style>
 <script>
@@ -35,11 +40,10 @@
 <script type="importmap">{"imports":{"wasi_snapshot_preview1":"./wasi_stubs.js"}}</script>
 </head>
 <body>
-<div style="position:fixed;bottom:0;left:0;z-index:20;background:#352400;color:#ffe499;padding:4px 8px;font:12px system-ui;max-width:75vw">TEST realm · Currency is nonredeemable. Characters, items and balances will not carry over to live launch.</div>
+<div id="realm-test-notice">TEST realm · Currency is nonredeemable. Characters, items and balances will not carry over to live launch.</div>
 <script type="module">import('/realm-wallet.bundle.js').catch(error => console.warn('Optional realm wallet unavailable:', error));</script>
-<div id="bar">{{ user.display_name }} {% if user.is_admin() %}<a href="/admin">admin</a>{% endif %}<a href="/account/password">password</a><button type="button" id="bell" title="Desktop notifications while this tab is in the background: level-ups, death, whispers, invites, mail, combat. Asks the browser once.">🔔</button><button type="button" id="fs" title="Full screen. Captures Esc, Tab and Ctrl+W for the game — press and hold Esc to leave.">full screen</button><form style="display:inline" method="post" action="/logout"><button type="submit">sign out</button></form></div>
-<div id="msg">Loading the realm…</div>
-<canvas id="benilla"></canvas>
+<div id="bar"><span class="realm-player">{{ user.display_name }}</span>{% if user.is_admin() %}<a href="/admin">admin</a>{% endif %}<a href="/" title="Reconnect to the realm after a lost connection">reconnect</a><a href="/account/password">password</a><button type="button" id="bell" title="Desktop notifications while this tab is in the background: level-ups, death, whispers, invites, mail, combat. Asks the browser once.">🔔</button><button type="button" id="fs" title="Full screen. Captures Esc, Tab and Ctrl+W for the game — press and hold Esc to leave.">full screen</button><form method="post" action="/logout"><button type="submit">sign out</button></form></div>
+<main id="game-surface"><div id="msg">Loading the realm…</div><canvas id="benilla"></canvas></main>
 <script type="module">
   // #msg covers only the pre-boot failures (no WebGPU, credential fetch); the moment boot()
   // takes over, its own overlay owns all progress — the old code hid #msg here and then did
