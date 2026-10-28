@@ -230,6 +230,13 @@ int main(){
 
 def run(source_root, compiler):
     movement = (source_root/'src/game/Anticheat/module/Movement/movement.cpp').read_text(encoding='utf-8')
+    header = (source_root/'src/game/Anticheat/module/Movement/movement.hpp').read_text(encoding='utf-8')
+    signatures = re.findall(r'\bbool\s+CheckBrowserMovement\s*\([^;{}]*\)\s*;', header)
+    if len(signatures) != 1:
+        raise ValueError('Expected exactly one actual CheckBrowserMovement declaration')
+    # The real declaration must compile against the real definition. Supplying
+    # an independently corrected fake would hide a broken source carry.
+    prelude = PRELUDE.replace('bool CheckBrowserMovement(MovementInfo&,uint16);', signatures[0])
     native = (source_root/'src/game/MotionGenerators/MovementHandler.cpp').read_text(encoding='utf-8')
     module = (source_root/'src/game/Anticheat/module/libanticheat.cpp').read_text(encoding='utf-8')
     interface = (source_root/'src/game/Anticheat/Anticheat.hpp').read_text(encoding='utf-8')
@@ -243,7 +250,7 @@ def run(source_root, compiler):
     declarations = '\n'.join(f'constexpr int {name}={number};' for number, name in enumerate(constants, 1))
     gate = method(module, 'bool SessionAnticheat::KnockBackAck(').replace('SessionAnticheat::','BrowserSession::')
     default = 'struct NullPolicy {' + method(interface,'virtual bool KnockBackAck(') + '};\n'
-    source = declarations + PRELUDE + response + policy + gate + default + '\n'.join(method(native, signature) for signature in (
+    source = declarations + prelude + response + policy + gate + default + '\n'.join(method(native, signature) for signature in (
         'void WorldSession::SendKnockBack(', 'void WorldSession::HandleMoveKnockBackAck(')) + CHECKS
     with tempfile.TemporaryDirectory(prefix='realm-native-knockback-') as temporary:
         root = Path(temporary)

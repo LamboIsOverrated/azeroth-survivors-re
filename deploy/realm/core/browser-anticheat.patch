@@ -438,7 +438,7 @@
          void OnExplore(AreaTableEntry const* p);
          void OnTransport(Player* plMover, ObjectGuid transportGuid);
  
-+        bool CheckBrowserMovement(MovementInfo& movementInfo);
++        bool CheckBrowserMovement(MovementInfo& movementInfo, uint16 opcode);
          bool CheckTeleport(uint16 opcode, MovementInfo& movementInfo);
  
          // commands

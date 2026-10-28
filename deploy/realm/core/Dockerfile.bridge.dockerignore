@@ -18,6 +18,7 @@
 !deploy/realm/core/BrowserMovementBudget.h
 !deploy/realm/core/movement_budget_test.cpp
 !deploy/realm/core/check_anticheat_dispatch.py
+!deploy/realm/core/check_knockback_contract.py
 !deploy/realm/bridge/
 !deploy/realm/bridge/core/
 !deploy/realm/bridge/core/world-bridge.patch

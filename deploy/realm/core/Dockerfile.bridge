@@ -13,7 +13,7 @@ COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned
 COPY deploy/realm/bridge/tools/apply-patch.mjs deploy/realm/bridge/tools/check_realmd_cli.py /opt/bridge/tools/
 RUN node /opt/bridge/tools/apply-patch.mjs /opt/src/mangos-classic --apply \
     && python3 /opt/bridge/tools/check_realmd_cli.py /opt/src/mangos-classic
-COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/anticheat/
+COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py deploy/realm/core/check_knockback_contract.py /opt/anticheat/
 RUN python3 /opt/anticheat/apply_anticheat.py /opt/src/mangos-classic --apply \
     && g++ -std=c++17 -Wall -Wextra -Werror /opt/anticheat/movement_budget_test.cpp -o /tmp/movement-budget-test \
     && /tmp/movement-budget-test \
@@ -40,7 +40,7 @@ COPY --from=build /tmp/cmangos-bridge-source.tar.gz /opt/railway-core/source/cma
 COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned-sources.json deploy/realm/bridge/core/001-world-bridge.sql deploy/realm/bridge/core/002-missing-character-reason.sql /opt/railway-core/source/bridge/core/
 COPY deploy/realm/bridge/tools/apply-patch.mjs deploy/realm/bridge/tools/check_realmd_cli.py /opt/railway-core/source/bridge/tools/
 COPY deploy/realm/core/Dockerfile.bridge /opt/railway-core/source/Dockerfile.bridge
-COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/railway-core/source/anticheat/
+COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py deploy/realm/core/check_knockback_contract.py /opt/railway-core/source/anticheat/
 ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 CORE_REALM_BRIDGE_COMPILED=1 REALM_BRIDGE_TEST_ENABLE=0 CORE_BROWSER_MOVEMENT_COMPILED=1 REALM_BROWSER_MOVEMENT_ENABLE=0
 LABEL dev.wenilla.core.revision="de8f72993b9e1faa1bf92dd5505f3daec5cea3ce" \
       dev.wenilla.bridge.phase="TEST-disabled" \
