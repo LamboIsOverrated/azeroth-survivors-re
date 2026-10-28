@@ -26,3 +26,20 @@ NOASSERTION, which does not replace upstream licenses. Source links:
 No game-install assets, extracted server assets, accounts or secrets are included
 in this repository or image. Runtime data comes only from the operator's private
 compatible Vanilla 1.12.1/build-5875 client input.
+
+## Measured private-input repair
+
+On 2026-10-28, the pinned extractor reproducibly received SIGSEGV in
+`adt_MCIN::prepareLoadedData` while reading `Kalimdor_33_49.adt`. GDB file-entry
+tracing isolated the tile. StormLib `smpq` 1.6-2 reported an unreadable patch entry
+after 393,216 bytes despite a declared 1,196,952-byte size; its partial bytes match
+the same-length prefix from a valid complete lower-priority terrain entry.
+The corresponding map entry from the terrain archive has SHA256
+`9e7809c00fab5177e89b3597cb784bdb9fc1dc07abc66b2ffcaccfdc1d9b0611`;
+the identical partial prefix has SHA256
+`7b1898d8709b0084f55f339f4293397c19a70fb5267087017de8b67e0a1472f6`.
+The source-only repair helper pins complete original archive hashes, restores
+only that proved identical entry in a copied highest patch, and records private
+runtime manifests. Other inputs are rejected. All original files remain present
+and read-only. An audit of 2,200 patch ADTs found no second invalid entry.
+No client entry, MPQ, extracted map, or other game asset is committed or published.

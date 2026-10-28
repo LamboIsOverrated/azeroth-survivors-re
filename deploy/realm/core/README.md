@@ -68,3 +68,37 @@ PvP; those require separate interactive acceptance. Status has no admin actions.
 Run `python -m unittest discover -s deploy/realm/core -v` for portable safety
 checks. A Linux container smoke test with real MariaDB is still required before
 production deployment. No compatible data is included in these tests.
+
+## Audited candidate-input repair
+
+The measured candidate's ZIP CRCs pass, but its nested patch entry
+`World/Maps/Kalimdor/Kalimdor_33_49.adt` cannot be fully decompressed. It declares
+1,196,952 bytes and returns only 393,216 bytes. The returned prefix is byte-for-byte
+identical to the structurally valid 1,196,952-byte entry in `terrain.MPQ`. All 2,200
+ADTs in the two patch archives were audited; this was the sole malformed entry.
+The original unpatched extractor then completed dbc/maps and both vmap phases
+after the backed repair. Movement maps and gameplay require separate completion.
+
+`repair_client.py` accepts only the exact audited patch/patch-2/terrain SHA256s
+and validates the exact prefix, full entry hash, all ADT chunk bounds, and a
+round trip through a copied highest-priority patch. Unknown inputs fail closed.
+It makes original MPQs read-only, hardlinks unchanged entries into a separate
+directory, copies/amends `patch-2.MPQ`, and atomically publishes the derived tree
+and `.client-data.json` containing every MPQ's name/size and the repair proof.
+Original MPQ contents are never rewritten. Both extractor and browser must use
+the same derived input. The original extractor hardcodes patches through
+`patch-2.MPQ`; adding `patch-3.MPQ` does not override its input.
+
+Install Debian `smpq` (tested 1.6-2 with `libstorm9` 9.22-1), then run:
+
+```sh
+python3 /opt/railway-core/repair_client.py --source /realm-data/client-source/Data --output /realm-data/client/Data
+touch /realm-data/client/.input-ready
+```
+
+The web image can copy `repair_client.py` and `adt_repair.py` together, install
+the same package, and run with `--source /state/client/Data --output
+/state/client/DerivedData` after private data staging, pointing the realm's
+`CLIENT_DATA` at the derived directory. All output remains private runtime data.
+Repeated runs verify existing derived state and preserve it. Source hashes and
+entry proof are source-only metadata in the helper; no game content is in Git.
