@@ -47,6 +47,10 @@ mod follow;
 mod gait;
 mod input;
 // `pub(crate)` for its `LandHere` message, which the debug panel writes.
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_movement;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use browser_movement::browser_reentry;
 pub(crate) mod land;
 mod move_trace;
 mod movement_net;
