@@ -145,3 +145,24 @@ test('Jupiter JSON cannot override actual encoded input, destination, slippage o
 test('Jupiter success without trusted RPC confirmation remains pending',async t=>{
   const f=await fixture(t,{execute:async()=>Response.json({status:'Success',code:0})});const o=(await f.request('/order',{direction:'sol-to-token',amount:'1'})).body;assert.equal((await f.request('/execute',{orderId:o.orderId,signedTransaction:signed(o.transaction)})).body.status,'Pending');
 });
+test('in-flight quote validation reserves the per-account capacity before awaiting simulation',async t=>{
+  let release;const gate=new Promise(resolve=>release=resolve);let simulations=0;
+  const f=await fixture(t,{fetchOverride:async(url,options)=>{
+    if(options.body && JSON.parse(options.body).method==='simulateTransaction') {if(++simulations===11) release();await gate;}
+  }});
+  const timeout=setTimeout(release,3000);t.after(()=>{clearTimeout(timeout);release();});
+  const results=await Promise.all(Array.from({length:11},async()=>{const result=await f.request('/order',{direction:'sol-to-token',amount:'1'});if(result.status===429) release();return result;}));
+  assert.equal(results.filter(result=>result.status===200).length,10);assert.equal(results.filter(result=>result.status===429).length,1);assert.equal(simulations,10);
+});
+test('failed quote validation releases reserved capacity for later requests',async t=>{
+  let failQuotes=true;
+  const f=await fixture(t,{fetchOverride:async(url)=>{if(failQuotes && String(url).includes('/swap/v2/order?')) throw new Error('temporary upstream failure');}});
+  for(let index=0;index<11;index++) assert.equal((await f.request('/order',{direction:'sol-to-token',amount:'1'})).status,502);
+  failQuotes=false;assert.equal((await f.request('/order',{direction:'sol-to-token',amount:'1'})).status,200);
+});
+test('Jupiter order requests specify configured slippage and exclude every unsupported router',async t=>{
+  const f=await fixture(t,{env:{MARKET_MAX_SLIPPAGE_BPS:'50'},routeOptions:{badSlippage:50}});
+  assert.equal((await f.request('/order',{direction:'sol-to-token',amount:'1'})).status,200);
+  const params=new URL(f.requests.find(request=>request.url.includes('/swap/v2/order?')).url).searchParams;
+  assert.equal(params.get('slippageBps'),'50');assert.equal(params.get('excludeRouters'),'jupiterz,dflow,okx');
+});

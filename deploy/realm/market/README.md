@@ -60,6 +60,8 @@ source/destination ATAs, output mint and Raydium account positions. The minimum
 output comes from the encoded instruction and appears in the review. RFQ, shared
 accounts, token-ledger routes, exact-output routes, newer instruction variants,
 nonzero platform fees and other DEX/router formats are rejected.
+Order requests explicitly set the configured `slippageBps` and exclude the unsupported
+`jupiterz`, `dflow` and `okx` routers. Returned instructions are still independently checked.
 
 This deliberately narrow coverage may reject the default Jupiter V2 quote for the
 future launch pool. A configured token contract alone is **not a launch-readiness
@@ -112,8 +114,10 @@ link before trading again if the status cannot be resolved.
 
 Expired unsubmitted quotes are discarded after a one-minute grace period. Active
 orders have separate per-account/global caps; submitted records are retained up to
-one day, with a 10,000-record memory ceiling. A gateway restart
-loses those records: old order IDs fail closed and the explorer signature remains the
+one day, with a 10,000-record memory ceiling. In-flight requests reserve capacity before
+validation or upstream awaits, release it on every completion/error path, and recheck
+capacity synchronously before insertion. A gateway restart loses those records:
+old order IDs fail closed and the explorer signature remains the
 recovery reference. Run a single gateway instance or use sticky routing for live
 quotes; a distributed/durable order store is required before horizontally scaling.
 

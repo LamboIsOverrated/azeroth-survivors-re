@@ -61,7 +61,7 @@ function settings(env) {
 /** Noncustodial wallet market. Identity and wallet binding are always resolved by the realm. */
 export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=globalThis.fetch,now=Date.now}={}) {
   if(typeof identity!=='function' || typeof resolveWallet!=='function') throw new Error('Realm identity and verified wallet providers are required.');
-  const config=settings(env),orders=new Map(),rates=new Map();let validation=null,validationUntil=0,validating=null;
+  const config=settings(env),orders=new Map(),rates=new Map(),accountReservations=new Map();let validation=null,validationUntil=0,validating=null,orderReservations=0;
   const headers={'content-type':'application/json',...(env.JUPITER_API_KEY?{'x-api-key':env.JUPITER_API_KEY}:{})};
   async function upstream(url,options={}) {
     const response=await fetchImpl(url,{...options,signal:AbortSignal.timeout(15000),redirect:'error'});
@@ -95,6 +95,14 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
     if(++rates.get(id).count>40) throw fail(429,'Too many market requests. Wait a minute.');
     // Retain pending results for a day; expired issued orders remain briefly to explain expiry.
     for(const [key,value] of orders) if(value.submitted?value.createdAt+86400000<=now():value.expiresAt+60000<=now()) orders.delete(key);
+  }
+  function capacity(account,ownReservation=0) {
+    const active=[...orders.values()].filter(order=>!order.result && (order.submitted || order.expiresAt>now()));
+    if(orders.size+orderReservations-ownReservation>=10000 || active.length+orderReservations-ownReservation>=1000 || active.filter(order=>order.account===account).length+(accountReservations.get(account)||0)-ownReservation>=10) throw fail(429,'Too many open market orders. Wait for existing quotes to expire.');
+  }
+  function reserveOrder(account) {
+    capacity(account);orderReservations++;accountReservations.set(account,(accountReservations.get(account)||0)+1);
+    return ()=>{orderReservations--;const remaining=accountReservations.get(account)-1;if(remaining) accountReservations.set(account,remaining);else accountReservations.delete(account);};
   }
   const binding=(order,message=order.message)=>hash(JSON.stringify([order.account,order.session,order.wallet,order.inputMint,order.outputMint,order.amount,order.expiresAt,hash(message)]));
   const pending=order=>({status:'Pending',orderId:order.id,signature:order.signature,explorerUrl:`https://solscan.io/tx/${order.signature}`,message:'Confirmation is pending. Check this transaction before starting another swap.'});
@@ -159,12 +167,13 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
         finally {order.inFlight=false;}
         const result=await status(order);return send(res,result.status==='Pending'?202:200,result);
       }
+      // Capacity includes every quote waiting on mint validation, Jupiter or simulation.
+      const release=reserveOrder(account);
+      try {
       const state=await validated();if(!state.enabled) throw fail(503,state.reason);
       if(!wallet) throw fail(409,'Link and verify a wallet before requesting a quote.');
-      const active=[...orders.values()].filter(order=>!order.result && (order.submitted || order.expiresAt>now()));
-      if(orders.size>=10000 || active.length>=1000 || active.filter(order=>order.account===account).length>=10) throw fail(429,'Too many open market orders. Wait for existing quotes to expire.');
       const inputMint=input.direction==='sol-to-token'?SOL_MINT:config.mint,outputMint=input.direction==='sol-to-token'?config.mint:SOL_MINT;
-      const params=new URLSearchParams({inputMint,outputMint,amount:input.amount,taker:wallet,maxSupportedTransactionVersion:'0'});
+      const params=new URLSearchParams({inputMint,outputMint,amount:input.amount,taker:wallet,maxSupportedTransactionVersion:'0',slippageBps:String(config.maxSlippageBps),excludeRouters:'jupiterz,dflow,okx'});
       let result,tx,safety;try {
         result=await upstream(`${JUPITER}/order?${params}`,{headers});
         if(typeof result.requestId!=='string' || !result.requestId || result.requestId.length>200 || !atoms(result.outAmount) || result.inputMint!==inputMint || result.outputMint!==outputMint || result.inAmount!==input.amount) throw new Error();
@@ -184,8 +193,11 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
       const lastValidBlockHeight=rawHeight===undefined || rawHeight===null?null:typeof rawHeight==='string' && /^\d{1,16}$/.test(rawHeight)?Number(rawHeight):rawHeight;
       if(lastValidBlockHeight!==null && (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight<0)) throw fail(502,'Invalid transaction expiry.');
       const order={id:randomUUID(),requestId:result.requestId,account,session,wallet,inputMint,outputMint,amount:input.amount,quotedOutAmount:result.outAmount,minimumOut:safety.minimumOut,createdAt:now(),expiresAt,lastValidBlockHeight,message:Buffer.from(tx.message.serialize()),submitted:false};
+      // Recheck synchronously at insertion, discounting this request's held reservation.
+      capacity(account,1);
       order.digest=binding(order);orders.set(order.id,order);
       return send(res,200,{orderId:order.id,inputMint,outputMint,inAmount:input.amount,outAmount:result.outAmount,minimumOut:safety.minimumOut,networkFeeLamports:safety.networkFeeLamports,transaction:result.transaction,expiresAt,tokenDecimals:state.tokenDecimals,tokenSymbol:config.symbol,router:'metis',feeBps:0,feeMint:null,priceImpactPct:typeof result.priceImpactPct==='string'?result.priceImpactPct.slice(0,32):null,messageHash:hash(order.message)});
+      } finally {release();}
     } catch(error) {return send(res,error.status || 500,{error:error.status?error.message:'The market could not complete this request.'});}
   };
 }
