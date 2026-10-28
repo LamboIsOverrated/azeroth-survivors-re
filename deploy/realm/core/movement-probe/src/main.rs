@@ -39,6 +39,12 @@ struct SpeedGate {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct KnockbackGate {
+    launch: [f32; 4],
+    timeout_ms: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Step {
     name: String,
     delay_ms: u64,
@@ -52,6 +58,18 @@ struct Step {
     await_teleport: Option<TeleportGate>,
     #[serde(default)]
     await_run_speed: Option<SpeedGate>,
+    #[serde(default)]
+    await_knockback: Option<KnockbackGate>,
+    #[serde(default)]
+    relative_to_knockback: bool,
+    #[serde(default)]
+    ballistic_from_knockback: bool,
+    #[serde(default)]
+    wait_knockback_age_ms: Option<u64>,
+    #[serde(default)]
+    ground_from_knockback: bool,
+    #[serde(default)]
+    terrain_follow: bool,
     #[serde(default)]
     relative_to_teleport: bool,
     #[serde(default)]
@@ -85,6 +103,8 @@ struct Fixture {
     create_missing_characters: bool,
     #[serde(default = "default_hold_seconds")]
     hold_seconds: u64,
+    #[serde(default)]
+    terrain: Option<phases::TerrainGrid>,
 }
 
 fn relay_safe(forbidden: &[([f32; 3], u32)], position: [f32; 3], flags: u32) -> bool {
@@ -187,8 +207,57 @@ fn validate(f: &Fixture) -> Result<()> {
         (3..=48).contains(&f.steps.len()),
         "require 3..48 bounded steps"
     );
+    if let Some(grid) = &f.terrain {
+        grid.validate()?;
+    }
+    let mut has_knockback = false;
+    let mut has_expiry_wait = false;
     let mut has_teleport = false;
     for (i, s) in f.steps.iter().enumerate() {
+        if let Some(gate) = &s.await_knockback {
+            ensure!(
+                !has_knockback
+                    && !has_teleport
+                    && (1000..=30000).contains(&gate.timeout_ms)
+                    && phases::launch_matches(gate.launch, gate.launch),
+                "invalid bounded knockback gate"
+            );
+            ensure!(f.terrain.is_some(), "knockback needs measured terrain");
+            has_knockback = true;
+        }
+        ensure!(
+            !s.relative_to_knockback || has_knockback,
+            "knockback reference needs real server gate"
+        );
+        ensure!(
+            !s.ballistic_from_knockback
+                || (has_knockback
+                    && s.relative_to_knockback
+                    && s.offset == [0.; 3]
+                    && s.jump.is_none()
+                    && s.flags == 8192),
+            "ballistic sample must use only actual server launch"
+        );
+        if let Some(age) = s.wait_knockback_age_ms {
+            ensure!(
+                has_knockback && !has_expiry_wait && (61000..=65000).contains(&age),
+                "only one bounded server expiry wait allowed"
+            );
+            has_expiry_wait = true;
+        }
+        ensure!(
+            !s.ground_from_knockback
+                || (has_expiry_wait
+                    && s.relative_to_knockback
+                    && !s.ballistic_from_knockback
+                    && s.flags == 0
+                    && s.offset == [0.; 3]),
+            "ground recovery requires actual post-expiry phase"
+        );
+        ensure!(
+            !s.terrain_follow || (has_knockback && s.flags & 8192 == 0 && s.offset[2] == 0.),
+            "terrain walking requires measured nonairborne phase"
+        );
         if let Some(gate) = &s.await_run_speed {
             ensure!(
                 gate.speed.is_finite()
@@ -213,6 +282,10 @@ fn validate(f: &Fixture) -> Result<()> {
                     && gate.destination[2] > f.origin[2]
                     && gate.destination[2] <= f.origin[2] + 10.,
                 "teleport drop must be above exact measured floor XY"
+            );
+            ensure!(
+                !has_knockback,
+                "teleport and knockback need separate bounded runs"
             );
             has_teleport = true;
         }
@@ -250,7 +323,7 @@ fn validate(f: &Fixture) -> Result<()> {
             "invalid or excessive fixture offset"
         );
         ensure!(
-            (s.flags & 0x2000 != 0) == s.jump.is_some()
+            (s.flags & 0x2000 != 0) == (s.jump.is_some() || s.ballistic_from_knockback)
                 && (s.flags & 0x0200_0000 != 0) == s.transport.is_some(),
             "movement tails disagree with flags"
         );
@@ -287,12 +360,18 @@ fn validate(f: &Fixture) -> Result<()> {
             .map(|s| s.delay_ms
                 + s.observe_ms
                 + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms)
-                + s.await_run_speed.as_ref().map_or(0, |g| g.timeout_ms))
+                + s.await_run_speed.as_ref().map_or(0, |g| g.timeout_ms)
+                + s.await_knockback.as_ref().map_or(0, |g| g.timeout_ms)
+                + s.wait_knockback_age_ms.unwrap_or(0))
             .sum::<u64>()
             <= 110000,
         "step schedule exceeds deadline reserve"
     );
     let last = f.steps.last().unwrap();
+    ensure!(
+        !has_knockback || (has_expiry_wait && last.terrain_follow),
+        "knockback run must include expiry and measured walk back"
+    );
     ensure!(
         !has_teleport || (last.relative_to_teleport && last.fall_from_teleport),
         "teleport phase must finish on measured floor"
@@ -441,6 +520,11 @@ struct TeleportReceipt {
     position: [f32; 3],
     at: Instant,
 }
+struct KnockbackReceipt {
+    origin: [f32; 3],
+    launch: [f32; 4],
+    at: Instant,
+}
 struct Run {
     peers: Vec<Peer>,
     rx: mpsc::Receiver<Input>,
@@ -454,6 +538,10 @@ struct Run {
     speed_ack_seen: bool,
     speed_above_floor: bool,
     floor_z: f32,
+    expected_knockback: Option<[f32; 4]>,
+    knockback: Option<KnockbackReceipt>,
+    terrain: Option<phases::TerrainGrid>,
+    baseline_health: Option<u32>,
     teleport: Option<TeleportReceipt>,
 }
 impl Run {
@@ -510,6 +598,28 @@ impl Run {
                 }
             }
             let primary_guid = self.peers[0].guid;
+            let fields = match &event {
+                SessionEvent::ObjectCreate { guid, fields, .. }
+                | SessionEvent::ObjectValues { guid, fields }
+                    if *guid == primary_guid =>
+                {
+                    Some(fields)
+                }
+                _ => None,
+            };
+            if let Some(fields) = fields {
+                let health = fields.unit_health();
+                ensure!(
+                    phases::peaceful_state(fields.unit_flags(), health, self.baseline_health),
+                    "ordinary probe entered combat or health changed"
+                );
+                if self.baseline_health.is_none() && health.is_some() {
+                    self.baseline_health = health;
+                    self.evidence.write(
+                        json!({"event":"baseline-health","guid":primary_guid,"health":health}),
+                    )?;
+                }
+            }
             let p = &mut self.peers[side];
             match event {
                 SessionEvent::Worldport {
@@ -668,8 +778,41 @@ impl Run {
                 SessionEvent::LogoutResponse { reason, .. } => {
                     ensure!(reason == 0, "logout refused {reason}")
                 }
-                SessionEvent::KnockBack { .. } => {
-                    bail!("unexpected knockback: a measured trajectory fixture is required")
+                SessionEvent::KnockBack {
+                    guid,
+                    counter,
+                    launch,
+                } => {
+                    let quad = [
+                        launch.zspeed,
+                        launch.cos_angle,
+                        launch.sin_angle,
+                        launch.xy_speed,
+                    ];
+                    ensure!(
+                        side == 0
+                            && guid == p.guid
+                            && self
+                                .expected_knockback
+                                .is_some_and(|expected| phases::launch_matches(expected, quad)),
+                        "unexpected or mismatched server knockback"
+                    );
+                    let origin = p.pose;
+                    p.writer.knock_back_ack(
+                        guid,
+                        counter,
+                        launch,
+                        8192,
+                        (origin, p.orientation),
+                        None,
+                    )?;
+                    self.knockback = Some(KnockbackReceipt {
+                        origin,
+                        launch: quad,
+                        at: Instant::now(),
+                    });
+                    self.expected_knockback = None;
+                    self.evidence.write(json!({"event":"server-knockback-ack-sent","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
                 }
                 _ => {}
             }
@@ -705,8 +848,41 @@ impl Run {
                 "run-speed ACK/observer confirmation did not arrive"
             );
         }
+        if let Some(gate) = &s.await_knockback {
+            ensure!(
+                self.baseline_health.is_some_and(|health| health > 0),
+                "live ordinary-avatar health baseline missing"
+            );
+            self.expected_knockback = Some(gate.launch);
+            self.knockback = None;
+            self.evidence.write(json!({"event":"operator-knockback-ready","case":s.name,"expected_launch":gate.launch,"timeout_ms":gate.timeout_ms}))?;
+            let deadline = Instant::now() + Duration::from_millis(gate.timeout_ms);
+            while self.expected_knockback.is_some() && Instant::now() < deadline {
+                self.pump(Duration::from_millis(50))?;
+            }
+            ensure!(
+                self.expected_knockback.is_none() && self.knockback.is_some(),
+                "expected server knockback did not arrive"
+            );
+        }
+        if let Some(age) = s.wait_knockback_age_ms {
+            self.evidence.write(json!({"event":"withholding-landing-until-expiry","age_ms":age,"no_land_or_swim":true}))?;
+            while self
+                .knockback
+                .as_ref()
+                .context("knockback clock missing")?
+                .at
+                .elapsed()
+                < Duration::from_millis(age)
+            {
+                self.pump(Duration::from_millis(200))?;
+            }
+            self.evidence.write(json!({"event":"knockback-expiry-wait-complete","actual_age_ms":self.knockback.as_ref().unwrap().at.elapsed().as_millis()}))?;
+        }
         self.pump(Duration::from_millis(s.delay_ms))?;
-        let base = if s.relative_to_teleport {
+        let base = if s.relative_to_knockback {
+            self.peers[0].pose
+        } else if s.relative_to_teleport {
             self.teleport
                 .as_ref()
                 .context("server teleport receipt missing")?
@@ -715,18 +891,44 @@ impl Run {
             f.origin
         };
         let mut pos = std::array::from_fn(|i| base[i] + s.offset[i]);
-        let fall_ms = if s.fall_from_teleport {
+        let fall_ms = if s.ballistic_from_knockback {
+            let kb = self
+                .knockback
+                .as_ref()
+                .context("actual knockback receipt missing")?;
+            let elapsed = kb.at.elapsed();
+            pos = phases::ballistic_position(kb.origin, kb.launch, elapsed.as_secs_f64())?;
+            pos[2] = pos[2].max(
+                self.terrain
+                    .as_ref()
+                    .context("terrain missing")?
+                    .height(pos[0], pos[1])?,
+            );
+            u32::try_from(elapsed.as_millis())?
+        } else if s.fall_from_teleport {
             let elapsed = self.teleport.as_ref().unwrap().at.elapsed();
             pos = phases::fall_position(pos, elapsed.as_secs_f64(), f.origin[2])?;
             u32::try_from(elapsed.as_millis())?
         } else {
             s.fall_ms
         };
+        if s.ground_from_knockback || s.terrain_follow {
+            pos[2] = self
+                .terrain
+                .as_ref()
+                .context("measured terrain missing")?
+                .height(pos[0], pos[1])?;
+        }
         self.relays.clear();
         if !s.accept {
             self.forbidden.push((pos, s.clear_flags));
         }
-        let jump = s.jump.map(|j| JumpInfo {
+        let quad = if s.ballistic_from_knockback {
+            Some(self.knockback.as_ref().unwrap().launch)
+        } else {
+            s.jump
+        };
+        let jump = quad.map(|j| JumpInfo {
             zspeed: j[0],
             cos_angle: j[1],
             sin_angle: j[2],
@@ -896,6 +1098,10 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         speed_ack_seen: false,
         speed_above_floor: false,
         floor_z: f.origin[2],
+        expected_knockback: None,
+        knockback: None,
+        terrain: f.terrain.clone(),
+        baseline_health: None,
         teleport: None,
     };
     run.pump(Duration::from_secs(3))?;
@@ -1095,6 +1301,36 @@ mod tests {
         assert!(validate(&f).is_err());
         f.steps[0].await_run_speed.as_mut().unwrap().above_floor = false;
         f.steps[0].await_run_speed.as_mut().unwrap().timeout_ms = 31000;
+        assert!(validate(&f).is_err());
+    }
+    #[test]
+    fn knockback_requires_measured_ground_and_real_expiry_boundary() {
+        let mut f = fixture();
+        f.terrain = Some(phases::TerrainGrid {
+            source_file: "0004832.map".into(),
+            source_sha256: "a".repeat(64),
+            x0: -15.,
+            y0: 0.,
+            step: 0.5,
+            nx: 35,
+            ny: 9,
+            heights: vec![3.; 315],
+        });
+        f.steps=serde_json::from_value(json!([
+            {"name":"baseline","delay_ms":100,"opcode":183,"flags":0,"offset":[0,0,0],"accept":true},
+            {"name":"ballistic","delay_ms":100,"opcode":238,"flags":8192,"offset":[0,0,0],"accept":true,
+                "await_knockback":{"launch":[-10,-1,0,10],"timeout_ms":10000},"relative_to_knockback":true,"ballistic_from_knockback":true},
+            {"name":"after-expiry","delay_ms":100,"opcode":238,"flags":1,"offset":[39,0,0],"accept":false,
+                "relative_to_knockback":true,"wait_knockback_age_ms":61000},
+            {"name":"ground-recovery","delay_ms":100,"opcode":183,"flags":0,"offset":[0,0,0],"accept":true,
+                "relative_to_knockback":true,"ground_from_knockback":true},
+            {"name":"walk-back","delay_ms":100,"opcode":183,"flags":0,"offset":[0,0,0],"accept":true,"terrain_follow":true}
+        ])).unwrap();
+        validate(&f).unwrap();
+        f.steps[2].wait_knockback_age_ms = Some(100);
+        assert!(validate(&f).is_err());
+        f.steps[2].wait_knockback_age_ms = Some(61000);
+        f.terrain = None;
         assert!(validate(&f).is_err());
     }
     #[test]

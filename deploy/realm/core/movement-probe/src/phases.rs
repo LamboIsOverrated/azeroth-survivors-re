@@ -1,4 +1,13 @@
 use anyhow::{ensure, Result};
+use serde::Deserialize;
+
+pub fn peaceful_state(flags: u32, health: Option<u32>, baseline: Option<u32>) -> bool {
+    flags & 0x00080000 == 0
+        && match (health, baseline) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
+}
 
 pub fn speed_matches(expected: f32, actual: f32) -> bool {
     expected.is_finite() && actual.is_finite() && (expected - actual).abs() <= 0.01
@@ -37,9 +46,136 @@ pub fn fall_position(origin: [f32; 3], elapsed_seconds: f64, floor: f32) -> Resu
     ])
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerrainGrid {
+    pub source_file: String,
+    pub source_sha256: String,
+    pub x0: f32,
+    pub y0: f32,
+    pub step: f32,
+    pub nx: usize,
+    pub ny: usize,
+    pub heights: Vec<f32>,
+}
+impl TerrainGrid {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.source_file.is_ascii()
+                && self.source_file.len() == 11
+                && self.source_file.ends_with(".map")
+                && self.source_file[..7].bytes().all(|b| b.is_ascii_digit()),
+            "invalid terrain provenance name"
+        );
+        ensure!(
+            self.source_sha256.len() == 64
+                && self.source_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "terrain provenance hash missing"
+        );
+        ensure!(
+            (2..=65).contains(&self.nx)
+                && (2..=65).contains(&self.ny)
+                && self.heights.len() == self.nx * self.ny,
+            "invalid terrain grid dimensions"
+        );
+        ensure!(
+            self.x0.is_finite()
+                && self.y0.is_finite()
+                && self.step.is_finite()
+                && (0.25..=2.0).contains(&self.step)
+                && self
+                    .heights
+                    .iter()
+                    .all(|h| h.is_finite() && h.abs() < 50000.),
+            "invalid terrain grid values"
+        );
+        Ok(())
+    }
+    pub fn height(&self, x: f32, y: f32) -> Result<f32> {
+        self.validate()?;
+        ensure!(x.is_finite() && y.is_finite(), "invalid terrain query");
+        let fx = (x - self.x0) / self.step;
+        let fy = (y - self.y0) / self.step;
+        ensure!(
+            fx >= 0. && fy >= 0. && fx <= (self.nx - 1) as f32 && fy <= (self.ny - 1) as f32,
+            "outside surveyed terrain"
+        );
+        let ix = (fx.floor() as usize).min(self.nx - 2);
+        let iy = (fy.floor() as usize).min(self.ny - 2);
+        let tx = fx - ix as f32;
+        let ty = fy - iy as f32;
+        let h = |x, y| self.heights[x * self.ny + y];
+        Ok((h(ix, iy) * (1. - tx) + h(ix + 1, iy) * tx) * (1. - ty)
+            + (h(ix, iy + 1) * (1. - tx) + h(ix + 1, iy + 1) * tx) * ty)
+    }
+}
+pub fn launch_matches(expected: [f32; 4], actual: [f32; 4]) -> bool {
+    actual.iter().chain(expected.iter()).all(|v| v.is_finite())
+        && (actual[1] * actual[1] + actual[2] * actual[2] - 1.).abs() < 0.01
+        && actual[3] >= 0.
+        && actual[3] <= 15.
+        && actual[0].abs() <= 15.
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(a, b)| (*a - b).abs() <= 0.05)
+}
+pub fn ballistic_position(origin: [f32; 3], launch: [f32; 4], seconds: f64) -> Result<[f32; 3]> {
+    ensure!(
+        launch_matches(launch, launch)
+            && origin.iter().all(|v| v.is_finite())
+            && seconds.is_finite()
+            && (0.0..=2.0).contains(&seconds),
+        "invalid bounded ballistic sample"
+    );
+    let gravity = 19.29110527038574;
+    let initial = f64::from(launch[0]);
+    let terminal = 60.148003;
+    let t = seconds.min((terminal - initial) / gravity);
+    let fall = t * (initial + 0.5 * gravity * t) + terminal * (seconds - t);
+    Ok([
+        origin[0] + launch[3] * launch[1] * seconds as f32,
+        origin[1] + launch[3] * launch[2] * seconds as f32,
+        origin[2] - fall as f32,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn measured_terrain_grid_interpolates_without_extrapolation() {
+        let grid = TerrainGrid {
+            source_file: "0004832.map".into(),
+            source_sha256: "a".repeat(64),
+            x0: 0.,
+            y0: 0.,
+            step: 1.,
+            nx: 2,
+            ny: 2,
+            heights: vec![0., 1., 2., 3.],
+        };
+        grid.validate().unwrap();
+        assert!((grid.height(0.5, 0.5).unwrap() - 1.5).abs() < 0.0001);
+        assert!(grid.height(-1., 0.).is_err());
+        assert!(grid.height(0., f32::NAN).is_err());
+    }
+    #[test]
+    fn ballistic_points_use_actual_launch_and_receipt_time() {
+        let q = [-10., -1., 0., 10.];
+        assert!(launch_matches(q, q));
+        assert!(!launch_matches(q, [-10., 1., 0., 10.]));
+        let point = ballistic_position([0., 0., 5.], q, 0.2).unwrap();
+        assert!((point[0] + 2.).abs() < 0.0001 && point[2] > 6.5 && point[2] < 6.7);
+        assert!(ballistic_position([0., 0., 5.], q, -1.).is_err());
+    }
+    #[test]
+    fn noncombat_probe_stops_on_server_combat_or_health_change() {
+        assert!(peaceful_state(0, Some(60), Some(60)));
+        assert!(peaceful_state(0, None, Some(60)));
+        assert!(!peaceful_state(0x80000, None, Some(60)));
+        assert!(!peaceful_state(0, Some(59), Some(60)));
+    }
     #[test]
     fn speed_gate_requires_exact_finite_authoritative_speed() {
         assert!(speed_matches(14., 14.));

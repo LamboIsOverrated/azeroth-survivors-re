@@ -188,9 +188,40 @@ yards above the old floor; a slow operator action fails rather than claiming a
 midair test after landing. Restore the speed through the normal operator UI even
 if a test fails, and keep both ordinary avatars at security zero. These gates
 wait for external attended actions; the probe sends no privileged command.
-Unexpected world transfers and knockback fail closed because this version does
-not synthesize passenger or forced trajectories.
-Full transport boarding/detach, knockback/withheld landing, taxi, slow fall,
+For a separately attended knockback phase, `await_knockback` names an expected
+`launch: [down-positive Z speed, cos, sin, XY speed]` and a 1,000–30,000 ms timeout.
+`operator-knockback-ready` is the only action prompt. The operator must first
+verify the actual runtime spell template has only the non-damaging knockback
+effect and no damage/aura/trigger effects. The intended single attended cast is
+10689, with the operator east of the primary to launch west into surveyed ground.
+The received encrypted `KnockBack` packet must match the ordinary avatar, finite
+direction and bounded expected launch. The probe records and ACKs its real
+counter/quad; it sends no cast, privileged command or combat action.
+
+`relative_to_knockback` uses the last accepted primary pose. With
+`ballistic_from_knockback`, the offset must be zero, flags must be falling, and
+the jump tail comes exclusively from the actual server launch. Up to two seconds
+of trajectory uses its monotonic receipt clock, the pinned gravity and terminal
+speed. A private `terrain` grid provides measured ground heights, interpolated
+without extrapolation; its source map name/SHA are operator attestations that
+must match the verified server files. No assets are bundled or modified. The
+running server still verifies every proposed collision, floor and trajectory.
+
+The expiry fixture sends positive ballistic samples, then
+`wait_knockback_age_ms: 61000` pumps replies without a voluntary landing/swim
+packet until that age on the actual receipt clock. This deliberately models a
+stale client withholding landing; it is not continuous rendered motion. That
+step must be a negative move in the knockback frame. The 61–65 second wait counts
+against the overall schedule and independent deadline. Require a first forged
+move refusal after the wait, `ground_from_knockback` recovery on surveyed ground,
+and ordinary `terrain_follow` walking back to origin. The last step must complete
+that return. Preserve actual native rejection reasons, positive relays, health,
+security and saved-position evidence before claiming the world test passed.
+
+The probe watches received ordinary-avatar health and `UNIT_FLAG_IN_COMBAT`.
+Combat or a health change aborts; an unintended combat cast cannot silently
+continue as an unattended physics test. Unexpected world transfers, unconfigured
+or mismatched knockbacks still fail. Full transport boarding/detach, taxi, slow fall,
 resurrection, and midair reset acceptance therefore remain separate world/client
 gates. Do not turn those missing runs into a pass from model tests.
 
