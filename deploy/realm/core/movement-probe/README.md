@@ -23,7 +23,8 @@ cargo clippy --locked --manifest-path deploy/realm/core/movement-probe/Cargo.tom
 ```
 
 The executable accepts `PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl` and optionally
-`--create-only`. Store both outside the client installation, normally in private
+`--create-only`, `--hold-online`, or `--expect-login-refusal` (one mode only).
+Store both outside the client installation, normally in private
 `benilla-config/movement/`. The evidence file must not exist. No passwords enter
 the fixture, command line or transcript. Export all these variables privately:
 
@@ -53,6 +54,38 @@ avatars are reused, never recreated or deleted; an unexpected roster fails.
 then exits without entering the world or sending movement. Use the recorded
 poses and operator map checks to prepare the measured fixture. Turn creation
 permission off for acceptance runs. Account creation remains an operator task.
+
+`--hold-online` connects **only the primary** ordinary account. It requires an
+existing avatar and creation permission off, proves world entry and its measured
+pose, emits `online-hold-ready`, and processes normal server/lifecycle replies for
+`hold_seconds` (default 20, range 10–60). It ignores the movement steps and sends
+no voluntary movement, combat or economy request. The operator coordinates any
+separate TEST-only bridge operation after the ready marker. The avatar then
+completes normal logout, reconnects to the roster, and verifies the saved pose;
+the transcript ends `online-hold-complete`. Each received logout completion is
+recorded separately. This mode does not assert the avatar's SQL money or bridge
+journal: the operator must preserve those independent observations.
+
+`--expect-login-refusal` connects only the primary, with creation disabled.
+SRP must succeed. It records an explicit `CHARACTER_LOGIN_FAILED` result 1 when
+that is the server's refusal point, with a subsequent authenticated roster check.
+The accepted bridge core also gates `World::AddSession_` **before** registration:
+that gate can close the socket during world authentication or the roster instead
+of sending a character-login failure. Such an actual peer EOF/reset while reading
+a world header is recorded as `world-peer-close-observed`, including its stage.
+Timeout, refused dial, bad credentials, queue rejection and malformed packets do
+not satisfy that observation. A real local peer-close test exercises this path
+through the existing protocol library. Because the library formats its native
+read error instead of preserving its type, classification is deliberately limited
+to its EOF message and Linux/Windows peer-reset codes; unfamiliar errors fail.
+
+**A peer close alone is not proof of a persistent bridge fence.** Require the
+same credentials to enter normally before the controlled fence, the operator's
+exact nonempty inflight row and correlated server log while refusal is observed,
+healthy listeners, then a normal login after the typed recovery clears that row.
+These modes never set TEST flags, issue bridge operations, edit SQL, restart a
+server or repair a fence. Do not start a session during another operator's
+exclusive drill until that operator coordinates the exact phase.
 
 Copy `fixture.template.json` to private storage. It deliberately fails validation
 until `isolated`, the actual source/image hashes, and the measured starting map

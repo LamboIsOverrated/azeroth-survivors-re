@@ -60,6 +60,8 @@ struct Fixture {
     steps: Vec<Step>,
     #[serde(default)]
     create_missing_characters: bool,
+    #[serde(default = "default_hold_seconds")]
+    hold_seconds: u64,
 }
 
 fn relay_safe(forbidden: &[([f32; 3], u32)], position: [f32; 3], flags: u32) -> bool {
@@ -70,6 +72,36 @@ fn relay_safe(forbidden: &[([f32; 3], u32)], position: [f32; 3], flags: u32) -> 
             flags & mask == 0
         }
     })
+}
+
+fn peer_closed(message: &str) -> bool {
+    // recv_packet currently formats (rather than chains) the native read error.
+    // Only EOF/reset while awaiting a world header is this observation. Never
+    // treat timeout, refused dial, auth rejection or malformed body as a fence.
+    message.contains("reading world header:")
+        && (message.contains("failed to fill whole buffer")
+            || message.contains("os error 104")
+            || message.contains("os error 10054"))
+}
+
+fn default_hold_seconds() -> u64 {
+    20
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Movement,
+    CreateOnly,
+    HoldOnline,
+    LoginRefusal,
+}
+fn parse_mode(arg: Option<&str>) -> Result<Mode> {
+    match arg {
+        None => Ok(Mode::Movement),
+        Some("--create-only") => Ok(Mode::CreateOnly),
+        Some("--hold-online") => Ok(Mode::HoldOnline),
+        Some("--expect-login-refusal") => Ok(Mode::LoginRefusal),
+        _ => bail!("unknown probe mode"),
+    }
 }
 
 fn default_observe_ms() -> u64 {
@@ -85,6 +117,10 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 fn validate(f: &Fixture) -> Result<()> {
     ensure!(f.version == 1 && f.isolated, "require isolated fixture v1");
+    ensure!(
+        (10..=60).contains(&f.hold_seconds),
+        "hold must be 10..60 seconds"
+    );
     for address in [&f.auth, &f.world] {
         let a: SocketAddr = address
             .parse()
@@ -336,7 +372,7 @@ fn connect(
     })
 }
 struct Run {
-    peers: [Peer; 2],
+    peers: Vec<Peer>,
     rx: mpsc::Receiver<Input>,
     evidence: Evidence,
     forbidden: Vec<([f32; 3], u32)>,
@@ -468,7 +504,11 @@ impl Run {
                     allow_move: true,
                 } if mover == p.guid => p.writer.set_active_mover(mover)?,
                 SessionEvent::CinematicTriggered { .. } => p.writer.complete_cinematic()?,
-                SessionEvent::LoggedOut => p.logged_out = true,
+                SessionEvent::LoggedOut => {
+                    p.logged_out = true;
+                    self.evidence
+                        .write(json!({"event":"logout-complete","side":side,"guid":p.guid}))?;
+                }
                 SessionEvent::LogoutResponse { reason, .. } => {
                     ensure!(reason == 0, "logout refused {reason}")
                 }
@@ -530,7 +570,61 @@ impl Run {
         Ok(())
     }
 }
-fn execute(f: &Fixture, raw: &[u8], output: &Path, create_only: bool) -> Result<()> {
+fn observe_refusal(f: &Fixture, pass: &str, evidence: &mut Evidence) -> Result<()> {
+    ensure!(
+        !f.create_missing_characters,
+        "refusal mode cannot provision characters"
+    );
+    let auth = benilla_protocol::logon(&f.auth, &f.primary.user, pass)?;
+    evidence.write(json!({"event":"srp-authenticated","world_entry_attempted":false}))?;
+    let observed_close = |stage: &str, e: anyhow::Error, evidence: &mut Evidence| -> Result<()> {
+        let detail = format!("{e:#}");
+        ensure!(
+            peer_closed(&detail),
+            "unexpected refusal failure at {stage}: {detail}"
+        );
+        evidence.write(json!({"event":"world-peer-close-observed","stage":stage,"detail":detail,
+            "attribution":"requires operator inflight/log evidence and prior/post normal controls; EOF alone is not a fence proof"}))
+    };
+    let mut s =
+        match WorldSession::connect_queued(&f.world, &f.primary.user, auth.session_key, &mut |_| {
+            false
+        }) {
+            Ok(s) => s,
+            Err(e) => return observed_close("world-auth", e, evidence),
+        };
+    let chars = match s.char_enum() {
+        Ok(chars) => chars,
+        Err(e) => return observed_close("character-roster", e, evidence),
+    };
+    let c = chars
+        .iter()
+        .find(|c| c.name == f.primary.character)
+        .context("declared QA character missing")?;
+    s.player_login(c.guid)?;
+    for _ in 0..256 {
+        match s.recv() {
+            Ok(benilla_protocol::ServerPacket::CharacterLoginFailed { result }) => {
+                ensure!(result == 1, "unexpected typed character refusal {result}");
+                let again = s.char_enum()?;
+                ensure!(
+                    again.iter().any(|a| a.guid == c.guid),
+                    "post-refusal authenticated roster missing"
+                );
+                evidence.write(json!({"event":"character-login-refused","result":result,"authenticated_roster_survived":true}))?;
+                return Ok(());
+            }
+            Ok(benilla_protocol::ServerPacket::LoginVerifyWorld { .. }) => {
+                bail!("unexpected world entry while refusal was required")
+            }
+            Ok(_) => {}
+            Err(e) => return observed_close("character-login", e, evidence),
+        }
+    }
+    bail!("no explicit refusal within packet ceiling")
+}
+
+fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
     for (key, value) in [
         ("WOW_UNATTENDED", "1"),
         ("WOW_NOSOUND", "1"),
@@ -553,14 +647,17 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, create_only: bool) -> Result<
     evidence.write(json!({"event":"preflight","fixture_sha256":format!("{:x}",Sha256::digest(raw)),"source_commit":f.source_commit,
         "image_digest":f.image_digest,"auth":f.auth,"world":f.world,"database_prefix":f.database_prefix,
         "primary":f.primary.user,"observer":f.observer.user,"security_attestation":[f.primary.security,f.observer.security],
-        "max_duration_seconds":180,"max_outbound_packets":128,"combat":false}))?;
+        "max_duration_seconds":180,"max_outbound_packets":128,"combat":false,"mode":format!("{mode:?}")}))?;
     // Independent hard bound also covers a stalled OS connect/read during authentication.
     thread::spawn(|| {
         thread::sleep(Duration::from_secs(180));
         eprintln!("movement probe exceeded hard deadline");
         std::process::exit(124);
     });
-    if create_only {
+    if mode == Mode::LoginRefusal {
+        return observe_refusal(f, &pass, &mut evidence);
+    }
+    if mode == Mode::CreateOnly {
         ensure!(
             f.create_missing_characters,
             "create-only needs fixture permission"
@@ -577,10 +674,19 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, create_only: bool) -> Result<
         return Ok(());
     }
     let (tx, rx) = mpsc::sync_channel(1024);
-    let observer = connect(f, &f.observer, &observer_pass, 1, tx.clone())?;
-    let primary = connect(f, &f.primary, &pass, 0, tx)?;
+    if mode == Mode::HoldOnline {
+        ensure!(
+            !f.create_missing_characters,
+            "hold mode cannot provision characters"
+        );
+    }
+    let mut peers = Vec::new();
+    if mode == Mode::Movement {
+        peers.push(connect(f, &f.observer, &observer_pass, 1, tx.clone())?);
+    }
+    peers.insert(0, connect(f, &f.primary, &pass, 0, tx)?);
     let mut run = Run {
-        peers: [primary, observer],
+        peers,
         rx,
         evidence,
         forbidden: vec![],
@@ -591,14 +697,20 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, create_only: bool) -> Result<
     run.pump(Duration::from_secs(3))?;
     ensure!(
         run.peers.iter().all(|p| p.entered),
-        "both world entries must be proven"
+        "all required world entries must be proven"
     );
     ensure!(
-        distance(run.peers[0].pose, f.origin) < 0.1 && distance(run.peers[1].pose, f.origin) < 20.,
+        distance(run.peers[0].pose, f.origin) < 0.1
+            && (run.peers.len() == 1 || distance(run.peers[1].pose, f.origin) < 20.),
         "initial world pose differs from measured fixture"
     );
-    for s in &f.steps {
-        run.step(f, s)?;
+    if mode == Mode::HoldOnline {
+        run.evidence.write(json!({"event":"online-hold-ready","guid":run.peers[0].guid,"hold_seconds":f.hold_seconds,"voluntary_movement":false,"economy_requests":false}))?;
+        run.pump(Duration::from_secs(f.hold_seconds))?;
+    } else {
+        for s in &f.steps {
+            run.step(f, s)?;
+        }
     }
     run.peers[0].writer.logout_request()?;
     run.pump(Duration::from_secs(25))?;
@@ -618,24 +730,35 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, create_only: bool) -> Result<
         "authoritative saved pose differs from final accepted pose"
     );
     run.evidence.write(json!({"event":"saved-pose-verified","pose":pos,"map":saved.map,"outbound_packets":run.sent}))?;
-    run.peers[1].writer.logout_request()?;
-    run.pump(Duration::from_secs(25))?;
-    ensure!(run.peers[1].logged_out, "observer logout not confirmed");
-    run.evidence.write(json!({"event":"wire-checks-passed","steps":f.steps.len(),"remaining":"correlate isolated server rejection reasons; map/operator fixtures require separate runs"}))?;
-    println!("Bounded wire checks passed; isolated server reason evidence is still required.");
+    if run.peers.len() == 2 {
+        run.peers[1].writer.logout_request()?;
+        run.pump(Duration::from_secs(25))?;
+        ensure!(run.peers[1].logged_out, "observer logout not confirmed");
+    }
+    run.evidence.write(json!({"event":if mode==Mode::HoldOnline {"online-hold-complete"} else {"wire-checks-passed"},"steps":if mode==Mode::HoldOnline {0} else {f.steps.len()},"remaining":"correlate isolated server rejection reasons; map/operator fixtures require separate runs"}))?;
+    if mode == Mode::HoldOnline {
+        println!("Bounded online hold, normal logout and saved pose verified.");
+    } else {
+        println!("Bounded wire checks passed; isolated server reason evidence is still required.");
+    }
     Ok(())
 }
 fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().collect();
     ensure!(
-        args.len() == 3 || (args.len() == 4 && args[3] == "--create-only"),
-        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--create-only]"
+        args.len()==3 || args.len()==4,
+        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--create-only|--hold-online|--expect-login-refusal]"
     );
     let raw = fs::read(&args[1])?;
     ensure!(raw.len() <= 65536, "fixture too large");
     let f: Fixture = serde_json::from_slice(&raw)?;
     validate(&f)?;
-    execute(&f, &raw, Path::new(&args[2]), args.len() == 4)
+    let mode = parse_mode(
+        args.get(3)
+            .map(|a| a.to_str().context("mode must be UTF-8"))
+            .transpose()?,
+    )?;
+    execute(&f, &raw, Path::new(&args[2]), mode)
 }
 
 #[cfg(test)]
@@ -685,6 +808,39 @@ mod tests {
         assert_eq!(step["flags"], json!(0x800)); // Object.h MOVEFLAG_FLYING, not FLYING_OLD.
     }
     #[test]
+    fn explicit_modes_never_fall_back_on_unknown_action() {
+        assert_eq!(parse_mode(None).unwrap(), Mode::Movement);
+        assert_eq!(parse_mode(Some("--create-only")).unwrap(), Mode::CreateOnly);
+        assert_eq!(parse_mode(Some("--hold-online")).unwrap(), Mode::HoldOnline);
+        assert_eq!(
+            parse_mode(Some("--expect-login-refusal")).unwrap(),
+            Mode::LoginRefusal
+        );
+        assert!(parse_mode(Some("--do-something-else")).is_err());
+    }
+    #[test]
+    fn refusal_classifies_actual_library_peer_eof_but_not_other_failures() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            drop(stream);
+        });
+        let err = WorldSession::connect(&addr.to_string(), "MOVEQAONE", [0; 40])
+            .err()
+            .expect("closed test peer");
+        server.join().unwrap();
+        assert!(peer_closed(&format!("{err:#}")));
+        for message in [
+            "reading world header: timed out",
+            "connecting to world server: connection refused",
+            "world server refused the session: result 0x15",
+            "parsing opcode 0x123: malformed",
+        ] {
+            assert!(!peer_closed(message));
+        }
+    }
+    #[test]
     fn valid_isolated_noncombat_fixture() {
         validate(&fixture()).unwrap();
     }
@@ -711,6 +867,11 @@ mod tests {
         f.steps[1].flags = 1;
         f.steps[1].clear_flags = 1;
         assert!(validate(&f).is_err());
+        for seconds in [0, 9, 61, 180] {
+            let mut f = fixture();
+            f.hold_seconds = seconds;
+            assert!(validate(&f).is_err());
+        }
         let mut f = fixture();
         f.steps.pop();
         assert!(validate(&f).is_err());
