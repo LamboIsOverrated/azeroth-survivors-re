@@ -36,6 +36,36 @@ After restart, a typed `status` operation locks the inflight row. That waits for
 
 The patch also fixes the pinned SOAP worker's unsynchronized completion booleans: release/acquire publication makes the output buffer and command result visible before the waiting SOAP thread reads them. A browser/HTTP timeout does not cancel a world-owned command or destroy its completion state.
 
+### Read-only login-gate health
+
+The exact console-only command `realmbridge v1 health` returns one line beginning
+`REALM_BRIDGE_HEALTH_V1 ` followed by this bounded JSON contract:
+
+```json
+{"version":1,"loginPermitted":true,"writerFailed":false,"inflightQueryOk":true,"inflight":"0","reason":"ready"}
+```
+
+Health and `LoginPermitted()` use the same read-only gate snapshot. A queued CharacterDatabase
+writer failure is unhealthy even if auth/world/SOAP ports remain open. The count query must
+return exactly one row and field containing a canonical unsigned 64-bit decimal string;
+missing tables, query exceptions, malformed results and nonzero inflight counts deny readiness.
+The writer-failure latch is sampled before and after the read, so a failure during it cannot
+produce a healthy result. `inflightQueryOk:false` always means `inflight:null`; a successful
+query always reports its exact decimal string, including when a writer failure arrived during
+the read. Reason priority is `writer-failed`, `inflight-query-failed`, `inflight-pending`, `ready`.
+
+The command accepts no extra tokens or whitespace suffix, refuses in-game sessions, and works
+with TEST commands disabled and ordinary players online. It changes no money, receipt, fence
+or failure latch, performs no transaction and does not stop the world. It is not a status or
+recovery operation. Consumers must validate the full version/types/count/reason consistency;
+compiled bridge runtimes must fail readiness closed if this command is unavailable or malformed.
+The stock companion runtime remains a separate capability and has no such command.
+
+The observed trigger was a date-dependent weekly-quest reset denied its required table cleanup
+permission: listeners remained healthy while the queued-writer latch denied all new sessions.
+Repair the underlying database/permission error and follow the controlled restart/recovery
+procedure; never treat the health command as a way to clear the latch or an unresolved fence.
+
 ## Source artifact, verification and rollout gates
 
 `core/world-bridge.patch` is the reviewable carry. `core/WorldBridge.h` is its readable kernel source; `core/pinned-sources.json` records hashes of all exact original files. `tools/generate-patch.mjs` fetches only that official pinned source into ignored `.audit/`, generates the patch, and checks application. For a clean checkout:

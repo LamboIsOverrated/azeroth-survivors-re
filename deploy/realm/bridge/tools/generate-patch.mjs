@@ -32,8 +32,14 @@ const handler = `
 // TEST-only world-owner bridge. LIVE game issuance is not yet reserve-backed.
 bool ChatHandler::HandleRealmBridgeCommand(char* args)
 {
+    if (GetSession()) return false;
+    if (RealmBridge::IsHealthCommand(args))
+    {
+        PSendSysMessage("REALM_BRIDGE_HEALTH_V1 %s", RealmBridge::InspectLoginGate().Json().c_str());
+        return true;
+    }
     RealmBridge::Request request;
-    if (GetSession() || !RealmBridge::Parse(args, request)) return false;
+    if (!RealmBridge::Parse(args, request)) return false;
     if (request.action == "apply")
     {
         char const* enabled = std::getenv("REALM_BRIDGE_TEST_ENABLE");

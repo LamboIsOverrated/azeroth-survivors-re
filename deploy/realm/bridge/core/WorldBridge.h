@@ -6,6 +6,7 @@
 #include "Database/SqlOperations.h"
 #include <cstdlib>
 #include <future>
+#include <cstring>
 #include <sstream>
 #include <memory>
 #include <array>
@@ -36,14 +37,58 @@ inline std::string Result(Request const& r, std::string const& state, std::strin
 {
     return "{\"version\":1,\"phase\":\"TEST\",\"id\":\"" + r.id + "\",\"direction\":\"" + r.direction + "\",\"accountId\":\"" + r.account + "\",\"guid\":\"" + r.guid + "\",\"units\":\"" + r.units + "\",\"expectedBefore\":\"" + r.expected + "\",\"state\":\"" + state + "\",\"before\":\"" + before + "\",\"after\":\"" + after + "\",\"reason\":\"" + reason + "\"}";
 }
-// Always fail closed on a missing schema or unresolved operation, even if the TEST
-// command is disabled. This gate is installed before a new WorldSession is loaded.
-inline bool LoginPermitted()
+inline bool IsHealthCommand(char const* args)
 {
-    if (CharacterDatabase.HasQueuedExecutionFailure()) return false;
-    auto result = CharacterDatabase.Query("SELECT COUNT(*) FROM realm_bridge_inflight");
-    return result && (*result)[0].GetUInt64() == 0;
+    // Compare the terminator too: health has no request payload or extra tokens.
+    return args && std::strncmp(args, "v1 health", sizeof("v1 health")) == 0;
 }
+struct LoginGateStatus
+{
+    bool writerFailed = false, inflightQueryOk = false;
+    std::string inflight;
+    bool Permitted() const { return !writerFailed && inflightQueryOk && inflight == "0"; }
+    char const* Reason() const
+    {
+        return writerFailed ? "writer-failed" : !inflightQueryOk ? "inflight-query-failed" : inflight != "0" ? "inflight-pending" : "ready";
+    }
+    std::string Json() const
+    {
+        return std::string("{\"version\":1,\"loginPermitted\":") + (Permitted() ? "true" : "false") +
+            ",\"writerFailed\":" + (writerFailed ? "true" : "false") +
+            ",\"inflightQueryOk\":" + (inflightQueryOk ? "true" : "false") +
+            ",\"inflight\":" + (inflightQueryOk ? "\"" + inflight + "\"" : "null") +
+            ",\"reason\":\"" + Reason() + "\"}";
+    }
+};
+inline bool ValidInflightCount(std::string const& value)
+{
+    if (value.empty() || value.size() > 20 || (value.size() > 1 && value[0] == '0')) return false;
+    for (char c : value) if (c < '0' || c > '9') return false;
+    return value.size() < 20 || value <= "18446744073709551615";
+}
+// Login and readiness share this exact read-only snapshot. Neither a latched
+// writer failure nor an unavailable/malformed COUNT may be reported as ready.
+inline LoginGateStatus InspectLoginGate()
+{
+    LoginGateStatus status;
+    status.writerFailed = CharacterDatabase.HasQueuedExecutionFailure();
+    if (status.writerFailed) return status;
+    try
+    {
+        auto result = CharacterDatabase.Query("SELECT COUNT(*) FROM realm_bridge_inflight");
+        if (result && result->GetFieldCount() == 1 && result->GetRowCount() == 1)
+        {
+            std::string count = (*result)[0].GetCppString();
+            if (ValidInflightCount(count)) { status.inflight = std::move(count); status.inflightQueryOk = true; }
+        }
+    }
+    catch (...) { /* A diagnostic/read failure never permits login. */ }
+    // A queued write can fail while the independent reader connection is busy.
+    status.writerFailed = CharacterDatabase.HasQueuedExecutionFailure();
+    return status;
+}
+// Always active, including when TEST commands are disabled, before WorldSession load.
+inline bool LoginPermitted() { return InspectLoginGate().Permitted(); }
 struct Completion { std::promise<std::string> promise; bool known = false; };
 class Operation final : public SqlOperation
 {
