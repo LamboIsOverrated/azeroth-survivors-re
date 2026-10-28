@@ -355,6 +355,7 @@ async fn user_action(
     };
     let self_target = id == session.user.id;
     let mut detail = None;
+    let mut one_time_password = None;
     let result: Result<String, String> = match action.as_str() {
         "ban" => {
             let dur = f.duration_hours.filter(|h| *h > 0).map(|h| h * 3600);
@@ -385,10 +386,8 @@ async fn user_action(
         "reset-web-password" => {
             let pw = random_string(ALNUM, 14);
             set_bootstrap_password(&state.db, id, &pw, state.cfg.bootstrap_ttl_hours).await?;
-            session::delete_for_user(&state.db, id).await?;
-            Ok(format!(
-                "new web password for {username}: {pw} (they must change it at first login)"
-            ))
+            one_time_password = Some((username.clone(), pw));
+            Ok("web password reset".into())
         }
         "rotate-game-password" => {
             accounts::rotate_password(&state.db, &state.soap, &state.secrets, id)
@@ -454,6 +453,27 @@ async fn user_action(
             .or(result.as_ref().err().map(String::as_str)),
     )
     .await;
+    if let Some(created) = one_time_password {
+        let mut response = render(templates::AdminUsers {
+            realm_name: state.realm_name().await,
+            nav: "users",
+            csrf: session.csrf_token,
+            me: session.user,
+            users: user_rows(&state).await?,
+            notice: None,
+            created: Some(created),
+            error: None,
+        });
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            "no-store".parse().unwrap(),
+        );
+        response.headers_mut().insert(
+            axum::http::header::REFERRER_POLICY,
+            "no-referrer".parse().unwrap(),
+        );
+        return Ok(response);
+    }
     Ok(back("/admin/users", result))
 }
 

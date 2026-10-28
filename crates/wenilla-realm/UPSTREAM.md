@@ -53,3 +53,19 @@ errors close both transports within at most about 20 seconds. Cookie rotation
 preserves the session identity. Provisioning refuses unknown existing core
 accounts; restore matching web state or recover them explicitly rather than
 silently resetting their password and claiming ownership.
+
+Password changes compare the credential hash again at commit time and revoke all
+other sessions in the same transaction. Resets revoke every session atomically;
+password-based login inserts a session only while its verified hash remains
+current. Reset passwords are shown once in a no-store HTML response, never in a
+redirect URL. SOAP transport errors and empty replies fail closed; ambiguous
+password changes require operator reconciliation rather than overwriting saved
+credentials with an unverified value.
+
+Migration 0005 preserves existing account IDs and ownership rows and adds the
+AUTOINCREMENT sequence so deleted IDs cannot be assigned to future users. It runs
+before requests are accepted, on a dedicated migration connection with foreign
+keys temporarily disabled for the parent-table rebuild. A foreign-key integrity
+check must pass before runtime connections open with foreign keys enabled. This
+prevents future identity reuse; any historical ownership corruption from an older
+installation requires a separate audit rather than an inferred repair.

@@ -106,6 +106,26 @@ pub async fn create(
     Ok(token)
 }
 
+/// A verified password login must still match the credential at session creation time.
+pub async fn create_for_password(
+    db: &SqlitePool,
+    user_id: i64,
+    expected_hash: &str,
+    ip: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<Option<String>> {
+    let token = new_token();
+    let t = now();
+    let inserted = sqlx::query("INSERT INTO sessions (token_hash,user_id,csrf_token,created_at,rotated_at,last_seen,expires_at,ip,user_agent) \
+        SELECT ?,u.id,?,?,?,?,?,?,? FROM users u JOIN local_credentials c ON c.user_id=u.id \
+        WHERE u.id=? AND u.disabled=0 AND c.password_hash=? \
+        AND (c.must_change=0 OR c.expires_at IS NULL OR c.expires_at>?)")
+        .bind(hash(&token)).bind(new_token()).bind(t).bind(t).bind(t).bind(t+MAX_AGE_SECS)
+        .bind(ip).bind(user_agent.map(|a| a.chars().take(200).collect::<String>()))
+        .bind(user_id).bind(expected_hash).bind(t).execute(db).await?;
+    Ok((inserted.rows_affected() == 1).then_some(token))
+}
+
 pub async fn delete_by_token(db: &SqlitePool, token: &str) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE token_hash = ? OR (previous_token_hash = ? AND previous_valid_until > ?)")
         .bind(hash(token))

@@ -104,6 +104,7 @@ async fn store(
 ) -> anyhow::Result<()> {
     let password = password.to_owned();
     let hash = password_work(move || hash_password(&password)).await??;
+    let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO local_credentials (user_id, password_hash, must_change, expires_at, updated_at) VALUES (?, ?, ?, ?, ?) \
          ON CONFLICT(user_id) DO UPDATE SET password_hash = excluded.password_hash, must_change = excluded.must_change, expires_at = excluded.expires_at, updated_at = excluded.updated_at",
@@ -113,8 +114,57 @@ async fn store(
     .bind(must_change as i64)
     .bind(expires_at)
     .bind(now())
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The caller verified this exact credential. Recheck it and the current session at commit
+/// time, so a concurrent reset/change cannot be undone by work begun with an older password.
+async fn change_password(
+    db: &SqlitePool,
+    session: &Session,
+    expected_hash: &str,
+    password: &str,
+) -> anyhow::Result<bool> {
+    let password = password.to_owned();
+    let hash = password_work(move || hash_password(&password)).await??;
+    let mut tx = db.begin().await?;
+    let changed = sqlx::query("UPDATE local_credentials SET password_hash=?, must_change=0, expires_at=NULL, updated_at=? \
+        WHERE user_id=? AND password_hash=? AND EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id \
+        WHERE s.id=? AND s.user_id=? AND s.csrf_token=? AND s.expires_at>? AND u.disabled=0)")
+        .bind(hash).bind(now()).bind(session.user.id).bind(expected_hash)
+        .bind(session.id).bind(session.user.id).bind(&session.csrf_token).bind(now())
+        .execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM sessions WHERE user_id=? AND NOT(id=? AND csrf_token=?)")
+        .bind(session.user.id)
+        .bind(session.id)
+        .bind(&session.csrf_token)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+pub async fn reset_admin_credentials(db: &SqlitePool) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "DELETE FROM local_credentials WHERE user_id IN (SELECT id FROM users WHERE role='admin')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -216,7 +266,7 @@ async fn login_submit(
         .await;
         return Ok(fail("wrong username or password"));
     }
-    let (user_id, _, must_change, _, expires_at) = row.expect("checked");
+    let (user_id, verified_hash, must_change, _, expires_at) = row.expect("checked");
     // Only a bootstrap credential carries an expiry, and only now — after the password itself
     // verified — is it safe to say so: an attacker without the password still cannot tell an
     // expired account from a wrong guess.
@@ -236,13 +286,17 @@ async fn login_submit(
             ));
         }
     }
-    let token = session::create(
+    let Some(token) = session::create_for_password(
         &state.db,
         user_id,
+        &verified_hash,
         ip.as_deref(),
         headers.get("user-agent").and_then(|v| v.to_str().ok()),
     )
-    .await?;
+    .await?
+    else {
+        return Ok(fail("credentials changed — sign in again"));
+    };
     audit::log(
         &state.db,
         Some(user_id),
@@ -343,8 +397,8 @@ async fn password_submit(
             .bind(session.user.id)
             .fetch_optional(&state.db)
             .await?;
-    let verified = match row {
-        Some((hash,)) => verify_password_async(&hash, &f.current).await?,
+    let verified = match &row {
+        Some((hash,)) => verify_password_async(hash, &f.current).await?,
         None => false,
     };
     if !verified {
@@ -356,7 +410,10 @@ async fn password_submit(
     if let Err(e) = valid_password(&f.new) {
         return Ok(fail(e));
     }
-    set_password(&state.db, session.user.id, &f.new).await?;
+    let hash = row.expect("verified credential").0;
+    if !change_password(&state.db, &session, &hash, &f.new).await? {
+        return Ok(fail("credentials changed — sign in again"));
+    }
     audit::log(
         &state.db,
         Some(session.user.id),

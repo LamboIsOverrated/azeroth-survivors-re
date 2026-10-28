@@ -689,7 +689,8 @@ async fn an_expired_first_login_password_stops_working() {
         ),
     )
     .await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(!r.headers.contains_key(header::LOCATION));
     let exp: (Option<i64>,) =
         sqlx::query_as("SELECT expires_at FROM local_credentials WHERE user_id = 2")
             .fetch_one(&h.state.db)
@@ -1154,4 +1155,121 @@ async fn character_balances_ignore_supplied_account_and_character_identifiers() 
         serde_json::from_str::<serde_json::Value>(&response.body).unwrap(),
         serde_json::json!({"characters": [], "snapshot":"last-saved", "nonredeemable":true})
     );
+}
+
+#[tokio::test]
+async fn bootstrap_password_change_revokes_other_preexisting_sessions() {
+    let h = harness().await;
+    h.state.mark_setup_complete().await.unwrap();
+    sqlx::query("INSERT INTO users (id,username,display_name,role,created_at) VALUES (1,'recipient','Recipient','player',0)").execute(&h.state.db).await.unwrap();
+    wenilla_realm::auth::local::set_bootstrap_password(
+        &h.state.db,
+        1,
+        "temporary shared secret",
+        48,
+    )
+    .await
+    .unwrap();
+    let login = || {
+        form(
+            "/login",
+            None,
+            &[
+                ("username", "recipient"),
+                ("password", "temporary shared secret"),
+            ],
+        )
+    };
+    let attacker = send(&h.app, login()).await.cookie().unwrap();
+    let recipient = send(&h.app, login()).await.cookie().unwrap();
+    assert_eq!(
+        send(&h.app, get("/api/identity", Some(&attacker)))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let page = send(&h.app, get("/account/password", Some(&recipient))).await;
+    let csrf = csrf_of(&page.body);
+    let response = send(
+        &h.app,
+        form(
+            "/account/password",
+            Some(&recipient),
+            &[
+                ("_csrf", &csrf),
+                ("current", "temporary shared secret"),
+                ("new", "recipient private password"),
+                ("confirm", "recipient private password"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    let current = response.cookie().unwrap_or(recipient);
+    assert_eq!(
+        send(&h.app, get("/api/identity", Some(&current)))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    for path in [
+        "/api/identity",
+        "/api/play",
+        "/api/character-balances",
+        "/ws/8085",
+    ] {
+        assert_eq!(
+            send(&h.app, get(path, Some(&attacker))).await.status,
+            StatusCode::UNAUTHORIZED,
+            "{path} must reject the temporary-password session after password change"
+        );
+    }
+    let sessions: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sessions WHERE user_id=1")
+        .fetch_one(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions.0, 1, "only the verified current session survives");
+}
+
+#[tokio::test]
+async fn password_reset_displays_secret_once_without_putting_it_in_a_url() {
+    let h = harness().await;
+    let admin = run_setup(&h).await;
+    sqlx::query("INSERT INTO users (id,username,display_name,role,created_at) VALUES (2,'recipient','Recipient','player',0)").execute(&h.state.db).await.unwrap();
+    let page = send(&h.app, get("/account/password", Some(&admin))).await;
+    let csrf = csrf_of(&page.body);
+    let response = send(
+        &h.app,
+        form(
+            "/admin/users/2/reset-web-password",
+            Some(&admin),
+            &[("_csrf", &csrf)],
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "the one-time secret belongs only in the direct HTML response"
+    );
+    assert!(!response.headers.contains_key(header::LOCATION));
+    assert_eq!(response.headers[header::CACHE_CONTROL], "no-store");
+    let start = response
+        .body
+        .find("is <code>")
+        .expect("one-time password display")
+        + "is <code>".len();
+    let password = response.body[start..].split('<').next().unwrap();
+    let hash: (String,) =
+        sqlx::query_as("SELECT password_hash FROM local_credentials WHERE user_id=2")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert!(wenilla_realm::auth::local::verify_password(
+        &hash.0, password
+    ));
+    assert!(!send(&h.app, get("/admin/users", Some(&admin)))
+        .await
+        .body
+        .contains(password));
 }

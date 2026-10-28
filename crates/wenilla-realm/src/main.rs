@@ -43,12 +43,7 @@ async fn main() -> Result<()> {
 
     match cli.cmd.unwrap_or(Cmd::Serve) {
         Cmd::ResetAdmin => {
-            sqlx::query("DELETE FROM local_credentials WHERE user_id IN (SELECT id FROM users WHERE role = 'admin')").execute(&sqlite).await?;
-            sqlx::query(
-                "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'admin')",
-            )
-            .execute(&sqlite)
-            .await?;
+            wenilla_realm::auth::local::reset_admin_credentials(&sqlite).await?;
             db::meta_set(&sqlite, "setup_complete", "0").await?;
             db::meta_set(&sqlite, "setup_mode", "reset").await?;
             db::meta_del(&sqlite, "setup_token").await?;

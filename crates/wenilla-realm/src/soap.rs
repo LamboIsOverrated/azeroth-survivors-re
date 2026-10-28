@@ -87,24 +87,17 @@ impl Client {
             .body(body)
             .send()
             .await;
-        // `account set password` is the one command whose handler leaves gSOAP with nothing to
-        // send: mangosd closes the connection without an HTTP reply (curl: "52 Empty reply")
-        // even though the verifier in `account.v` has changed. Verified live 2026-08-30. Treat
-        // that shape as success for that command only; everything else keeps failing loudly.
-        let silent_ok = command.starts_with("account set password ");
+        // A transport failure or empty reply is ambiguous, including password changes.
+        // Never overwrite encrypted credentials without a confirmed console response.
         let resp = match sent {
             Ok(r) => r,
-            Err(e) if silent_ok && !e.is_timeout() => return Ok(String::new()),
             Err(e) => return Err(e.into()),
         };
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(SoapError::Unauthorized);
         }
         let text = resp.text().await?;
-        match parse_reply(&text) {
-            Err(SoapError::Transport(m)) if silent_ok && m == "empty reply" => Ok(String::new()),
-            other => other,
-        }
+        parse_reply(&text)
     }
 }
 
@@ -203,5 +196,33 @@ mod tests {
         assert!(arg("a<b", 16).is_err());
         assert!(arg("", 16).is_err());
         assert!(arg("abcdefghijklmnopq", 16).is_err());
+    }
+
+    #[tokio::test]
+    async fn password_change_transport_failures_and_empty_replies_are_not_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        drop(listener);
+        assert!(
+            Client::new(&endpoint, "test", "mock-secret")
+                .exec("account set password TEST NEW NEW")
+                .await
+                .is_err(),
+            "connection refusal must not overwrite saved game credentials"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let app = axum::Router::new().route("/", axum::routing::post(|| async { "" }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        assert!(
+            Client::new(&endpoint, "test", "mock-secret")
+                .exec("account set password TEST NEW NEW")
+                .await
+                .is_err(),
+            "an empty reply is ambiguous until explicitly verified"
+        );
+        task.abort();
     }
 }
