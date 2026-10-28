@@ -70,3 +70,11 @@ jobs:
         run: |
           bash deploy/realm/bridge/tools/smoke-image.sh realm-core-bridge:ci
           printf 'Pinned core compiled inside Dockerfile.bridge; actual image passed network-isolated binary/runtime/source smoke. Scratch MariaDB kernel fault drill passed. No deployment or LIVE activation.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Export exact tested binaries, runtime libraries and corresponding source without game assets
+        run: bash deploy/realm/bridge/tools/export-image.sh realm-core-bridge:ci "$RUNNER_TEMP/realm-bridge-bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: realm-bridge-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/realm-bridge-bundle/
+          if-no-files-found: error
+          retention-days: 14

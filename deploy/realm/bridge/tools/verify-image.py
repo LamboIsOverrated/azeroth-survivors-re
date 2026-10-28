@@ -45,7 +45,10 @@ def verify_runtime(root='/'):
         linked = subprocess.run(['ldd', binary], capture_output=True, text=True, timeout=15)
         if linked.returncode or 'not found' in linked.stdout:
             raise ValueError('Runtime ABI/linker verification failed for ' + name)
-        help_result = subprocess.run([binary, '--help'], capture_output=True, text=True, timeout=15)
+        # These pinned binaries have different CLI contracts: realmd has no
+        # --help option, while mangosd's help is needed to inspect bot flags.
+        probe = '--help' if name == 'mangosd' else '--version'
+        help_result = subprocess.run([binary, probe], capture_output=True, text=True, timeout=15)
         if help_result.returncode:
             raise ValueError('Actual binary argument parsing failed for ' + name)
         if name == 'mangosd' and any(flag in help_result.stdout.lower() for flag in ('playerbot', 'ahbot')):
