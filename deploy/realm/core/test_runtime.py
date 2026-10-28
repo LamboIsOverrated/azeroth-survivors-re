@@ -3,6 +3,8 @@ from contextlib import ExitStack
 import json
 import os
 import pathlib
+import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -137,7 +139,7 @@ class RuntimeTests(unittest.TestCase):
                 runtime.settings(env)
 
     def test_compiled_capability_flags_accept_only_zero_or_one(self):
-        for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED', 'REALM_BRIDGE_TEST_ENABLE',
+        for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED', 'CORE_REALM_BRIDGE_COMPILED', 'REALM_BRIDGE_TEST_ENABLE',
                      'CORE_BROWSER_MOVEMENT_COMPILED', 'REALM_BROWSER_MOVEMENT_ENABLE'):
             for value in ('true', '2', '-1', '', 1):
                 env = self.env()
@@ -172,9 +174,10 @@ class RuntimeTests(unittest.TestCase):
         for playerbots, ahbot in (('1','1'), ('0','1'), ('1','0')):
             with self.subTest(playerbots=playerbots, ahbot=ahbot), self.assertRaisesRegex(ValueError, 'bot-free'):
                 runtime.settings(self.env(CORE_PLAYERBOTS_COMPILED=playerbots,
-                                          CORE_AHBOT_COMPILED=ahbot, REALM_BRIDGE_TEST_ENABLE='1'))
+                                          CORE_AHBOT_COMPILED=ahbot, CORE_REALM_BRIDGE_COMPILED='1',
+                                          REALM_BRIDGE_TEST_ENABLE='1'))
         env = self.env(CORE_PLAYERBOTS_COMPILED='0', CORE_AHBOT_COMPILED='0',
-                       REALM_BRIDGE_TEST_ENABLE='1', LIVE_SETTLEMENT_ENABLE='1')
+                       CORE_REALM_BRIDGE_COMPILED='1', REALM_BRIDGE_TEST_ENABLE='1', LIVE_SETTLEMENT_ENABLE='1')
         cfg = runtime.settings(env)
         options = runtime.game_options(cfg)
         self.assertEqual(options['env']['REALM_BRIDGE_TEST_ENABLE'], '1')
@@ -222,6 +225,172 @@ class RuntimeTests(unittest.TestCase):
         defaults = runtime.settings(self.env())
         self.assertEqual(defaults['CORE_PLAYERBOTS_COMPILED'], '1')
         self.assertEqual(defaults['CORE_AHBOT_COMPILED'], '1')
+        self.assertEqual(defaults['CORE_REALM_BRIDGE_COMPILED'], '0')
+
+    def test_bridge_compiled_and_enabled_capability_matrix(self):
+        for compiled in ('0', '1'):
+            for enabled in ('0', '1'):
+                env = self.env(CORE_REALM_BRIDGE_COMPILED=compiled, REALM_BRIDGE_TEST_ENABLE=enabled,
+                               CORE_PLAYERBOTS_COMPILED='0', CORE_AHBOT_COMPILED='0')
+                if compiled == '0' and enabled == '1':
+                    with self.assertRaisesRegex(ValueError, 'compiled bridge'):
+                        runtime.settings(env)
+                else:
+                    self.assertEqual(runtime.settings(env)['CORE_REALM_BRIDGE_COMPILED'], compiled)
+        self.assertIn('CORE_REALM_BRIDGE_COMPILED=0', (HERE/'Dockerfile').read_text())
+        self.assertIn('CORE_REALM_BRIDGE_COMPILED=1', (HERE/'Dockerfile.bridge').read_text())
+
+    def bridge_metadata(self):
+        column = lambda kind, sqltype, length=0, collation='': {
+            'data_type': kind, 'column_type': sqltype, 'nullable': 'NO',
+            'length': length, 'collation': collation, 'extra': ''}
+        identity = column('char', 'char(64)', 64, 'ascii_bin')
+        payload = column('varchar', 'varchar(256)', 256, 'ascii_bin')
+        return {'tables': dict.fromkeys(('characters', 'realm_bridge_inflight', 'realm_bridge_receipts'), 'InnoDB'),
+                'columns': {
+                    'characters': {'guid': column('int', 'int(11) unsigned'),
+                                   'account': column('int', 'int(11) unsigned'),
+                                   'money': column('int', 'int(11) unsigned'),
+                                   'online': column('tinyint', 'tinyint(3) unsigned')},
+                    'realm_bridge_inflight': {'operation_id': dict(identity), 'payload': dict(payload)},
+                    'realm_bridge_receipts': {'operation_id': dict(identity), 'payload': dict(payload),
+                                             'state': column('enum', "enum('applied','rejected')", 8, 'utf8mb3_general_ci'),
+                                             'before_money': column('int', 'int(10) unsigned'),
+                                             'after_money': column('int', 'int(10) unsigned'),
+                                             'reason': column('varchar', 'varchar(32)', 32, 'utf8mb3_general_ci')}},
+                'primary_keys': {'characters': [('guid', 0)],
+                                 'realm_bridge_inflight': [('operation_id', 0)],
+                                 'realm_bridge_receipts': [('operation_id', 0)]}}
+
+    def test_bridge_schema_validation_rejects_incompatible_atomic_receipt_storage(self):
+        mutations = [
+            lambda m: m['tables'].pop('realm_bridge_inflight'),
+            *[lambda m, table=t: m['tables'].__setitem__(table, 'MyISAM')
+              for t in ('characters', 'realm_bridge_inflight', 'realm_bridge_receipts')],
+            lambda m: m['primary_keys'].__setitem__('realm_bridge_receipts', [('operation_id', 0), ('payload', 0)]),
+            lambda m: m['primary_keys'].__setitem__('realm_bridge_inflight', [('payload', 0)]),
+            lambda m: m['primary_keys'].__setitem__('realm_bridge_receipts', [('operation_id', 16)]),
+            lambda m: m['columns']['realm_bridge_receipts']['reason'].update(length=16, column_type='varchar(16)'),
+            lambda m: m['columns']['realm_bridge_receipts'].pop('after_money'),
+            lambda m: m['columns']['realm_bridge_receipts']['state'].update(column_type="enum('applied','rejected','unknown')"),
+            lambda m: m['columns']['realm_bridge_receipts']['state'].update(column_type="enum('APPLIED','REJECTED')"),
+            lambda m: m['columns']['realm_bridge_receipts']['before_money'].update(column_type='int(10)'),
+            lambda m: m['columns']['realm_bridge_inflight']['operation_id'].update(collation='ascii_general_ci'),
+            lambda m: m['columns']['realm_bridge_inflight']['payload'].update(nullable='YES'),
+            lambda m: m['columns']['characters']['guid'].update(data_type='bigint', column_type='bigint unsigned'),
+        ]
+        runtime.validate_bridge_schema(self.bridge_metadata())
+        for index, mutate in enumerate(mutations):
+            metadata = self.bridge_metadata()
+            mutate(metadata)
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                runtime.validate_bridge_schema(metadata)
+
+    def test_bridge_gate_is_read_only_mandatory_for_compiled_test_off_and_base_unchanged(self):
+        for compiled in ('0', '1'):
+            cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED=compiled))
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(runtime, 'bridge_schema_metadata', return_value=self.bridge_metadata()) as metadata:
+                runtime.require_bridge_schema(cfg, pathlib.Path(directory))
+                self.assertEqual(metadata.call_count, int(compiled))
+        bad = self.bridge_metadata()
+        bad['columns']['realm_bridge_receipts']['reason']['length'] = 16
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runtime, 'bridge_schema_metadata', return_value=bad), \
+                patch.object(runtime, 'run_child') as launch:
+            root = pathlib.Path(directory)
+            with self.assertRaisesRegex(RuntimeError, '001-world-bridge.sql.*002-missing-character-reason.sql'):
+                runtime.require_bridge_schema(runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1')), root)
+            self.assertTrue((root/'logs/bridge-schema-error.log').is_file())
+            launch.assert_not_called()
+
+    def test_bootstrap_checks_compiled_schema_after_security_before_database_ready(self):
+        cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1'))
+        events = []
+        def sql(cfg, statement):
+            events.append('security' if statement.startswith('\nCREATE USER') else 'query')
+            return '1'
+        def gate(cfg, root):
+            self.assertFalse(runtime.STATE['database'])
+            self.assertEqual(events[-1], 'security')
+            raise RuntimeError('reviewed schema required')
+        with patch.object(runtime, 'sql', side_effect=sql), \
+                patch.object(runtime, 'schema_ready', return_value=True), \
+                patch.object(runtime, 'require_bridge_schema', side_effect=gate), \
+                patch.dict(runtime.STATE, {'database': True}), \
+                patch.object(runtime.STOP, 'is_set', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'reviewed schema'):
+                runtime.bootstrap(cfg, pathlib.Path('/unused'))
+            self.assertFalse(runtime.STATE['database'])
+
+    def test_bridge_schema_is_rechecked_after_a_previous_valid_start(self):
+        good, bad = self.bridge_metadata(), self.bridge_metadata()
+        bad['tables']['realm_bridge_receipts'] = 'MyISAM'
+        cfg = runtime.settings(self.env(CORE_REALM_BRIDGE_COMPILED='1', REALM_BRIDGE_TEST_ENABLE='0'))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(runtime, 'bridge_schema_metadata', side_effect=[good, bad]) as metadata:
+            runtime.require_bridge_schema(cfg, pathlib.Path(directory))
+            with self.assertRaisesRegex(RuntimeError, 'compiled bridge schema'):
+                runtime.require_bridge_schema(cfg, pathlib.Path(directory))
+            self.assertEqual(metadata.call_count, 2, 'a prior success must not cache schema acceptance')
+
+    @unittest.skipUnless(os.environ.get('CORE_BRIDGE_SCHEMA_FIXTURE') == '1',
+                         'requires explicitly enabled disposable MariaDB fixture')
+    def test_actual_mariadb_bridge_metadata_read_only_and_structural_failures(self):
+        self.assertEqual(os.environ.get('RAILWAY_SERVICE_ID'), '09bb722b-e45b-4b32-923c-9198c8374fa6')
+        cfg = self.env(CORE_REALM_BRIDGE_COMPILED='1')
+        cfg.update(DB_HOST='127.0.0.1', DB_PORT='13307', DB_ROOT_PASSWORD=os.environ['MARIADB_ROOT_PASSWORD'])
+        cfg = runtime.settings(cfg)
+        create = """
+CREATE TABLE characters (guid INT UNSIGNED NOT NULL PRIMARY KEY, account INT UNSIGNED NOT NULL,
+ money INT UNSIGNED NOT NULL, online TINYINT UNSIGNED NOT NULL) ENGINE=InnoDB;
+CREATE TABLE realm_bridge_inflight (operation_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+ payload VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL) ENGINE=InnoDB;
+CREATE TABLE realm_bridge_receipts (operation_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+ payload VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, state ENUM('applied','rejected') NOT NULL,
+ before_money INT UNSIGNED NOT NULL, after_money INT UNSIGNED NOT NULL, reason VARCHAR(32) NOT NULL) ENGINE=InnoDB;
+"""
+        mutations = [None, 'DROP TABLE realm_bridge_inflight',
+                     'ALTER TABLE characters ENGINE=MyISAM',
+                     'ALTER TABLE realm_bridge_inflight ENGINE=MyISAM',
+                     'ALTER TABLE realm_bridge_receipts ENGINE=MyISAM',
+                     'ALTER TABLE realm_bridge_receipts DROP PRIMARY KEY, ADD PRIMARY KEY(operation_id,payload)',
+                     'ALTER TABLE realm_bridge_receipts MODIFY reason VARCHAR(16) NOT NULL',
+                     'ALTER TABLE realm_bridge_receipts DROP COLUMN after_money',
+                     "ALTER TABLE realm_bridge_receipts MODIFY state ENUM('applied','rejected','unknown') NOT NULL",
+                     'ALTER TABLE realm_bridge_receipts MODIFY before_money INT NOT NULL',
+                     'ALTER TABLE realm_bridge_inflight MODIFY operation_id CHAR(64) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL']
+        with tempfile.TemporaryDirectory() as directory:
+            diagnostics = pathlib.Path(directory)/'private-database-error.log'
+            actual_sql = runtime.sql
+            def query(statement):
+                return actual_sql(cfg, statement, diagnostics=diagnostics)
+            for mutation in mutations:
+                database = 'realm_bridge_schema_fixture_' + secrets.token_hex(6)
+                self.assertRegex(database, r'^realm_bridge_schema_fixture_[0-9a-f]{12}$')
+                try:
+                    query(f'CREATE DATABASE `{database}`; USE `{database}`;' + create)
+                    if mutation:
+                        query(f'USE `{database}`;' + mutation)
+                    before = query(f"SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA='{database}' ORDER BY TABLE_NAME")
+                    reads = []
+                    def read_only(cfg, statement, **kwargs):
+                        self.assertTrue(statement.startswith('SELECT '))
+                        self.assertNotIn(';', statement)
+                        reads.append(statement)
+                        return actual_sql(cfg, statement, **kwargs)
+                    with self.subTest(mutation=mutation), patch.object(runtime, 'sql', side_effect=read_only):
+                        metadata = runtime.bridge_schema_metadata(cfg, database, diagnostics)
+                        if mutation:
+                            with self.assertRaises(ValueError):
+                                runtime.validate_bridge_schema(metadata)
+                        else:
+                            runtime.validate_bridge_schema(metadata)
+                        self.assertEqual(len(reads), 3)
+                    self.assertEqual(before, query(f"SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA='{database}' ORDER BY TABLE_NAME"))
+                finally:
+                    self.assertTrue(re.fullmatch(r'realm_bridge_schema_fixture_[0-9a-f]{12}', database))
+                    query(f'DROP DATABASE IF EXISTS `{database}`')
 
     def test_config_forces_pvp_private_ports_and_bots_off_on_every_boot(self):
         with tempfile.TemporaryDirectory() as tmp:

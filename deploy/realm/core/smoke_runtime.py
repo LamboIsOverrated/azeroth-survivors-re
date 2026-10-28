@@ -10,11 +10,24 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import runtime
 
 
 class RuntimeImageSmoke(unittest.TestCase):
+    def test_compiled_bridge_declares_mandatory_test_off_schema_gate(self):
+        capabilities = runtime.compiled_capabilities(os.environ)
+        self.assertEqual(capabilities['CORE_REALM_BRIDGE_COMPILED'], '1')
+        self.assertEqual(capabilities['REALM_BRIDGE_TEST_ENABLE'], '0')
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runtime, 'bridge_schema_metadata', side_effect=RuntimeError('smoke missing schema')) as probe:
+            with self.assertRaisesRegex(RuntimeError, '001-world-bridge.sql.*002-missing-character-reason.sql'):
+                runtime.require_bridge_schema(capabilities, Path(temporary))
+            probe.assert_called_once()
+        for name in ('001-world-bridge.sql', '002-missing-character-reason.sql'):
+            self.assertTrue((Path('/opt/railway-core/source/bridge/core')/name).is_file())
+
     def test_actual_binary_arguments_and_declared_templates(self):
         capabilities = runtime.compiled_capabilities(os.environ)
         cfg = runtime.settings(dict(capabilities, DB_ROOT_PASSWORD='SmokeRoot12345',

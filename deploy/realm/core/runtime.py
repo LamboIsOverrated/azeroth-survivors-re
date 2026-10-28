@@ -27,12 +27,15 @@ CHILDREN = []
 def compiled_capabilities(env):
     capabilities = {}
     for name, default in [('CORE_PLAYERBOTS_COMPILED', '1'), ('CORE_AHBOT_COMPILED', '1'),
-                          ('REALM_BRIDGE_TEST_ENABLE', '0'), ('CORE_BROWSER_MOVEMENT_COMPILED', '0'),
+                          ('CORE_REALM_BRIDGE_COMPILED', '0'), ('REALM_BRIDGE_TEST_ENABLE', '0'),
+                          ('CORE_BROWSER_MOVEMENT_COMPILED', '0'),
                           ('REALM_BROWSER_MOVEMENT_ENABLE', '0')]:
         value = env.get(name, default)
         if value not in ('0', '1'):
             raise ValueError(name + ' must be 0 or 1')
         capabilities[name] = value
+    if capabilities['REALM_BRIDGE_TEST_ENABLE'] == '1' and capabilities['CORE_REALM_BRIDGE_COMPILED'] != '1':
+        raise ValueError('REALM_BRIDGE_TEST_ENABLE requires a compiled bridge build')
     if capabilities['REALM_BRIDGE_TEST_ENABLE'] == '1' and any(
             capabilities[name] != '0' for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED')):
         raise ValueError('REALM_BRIDGE_TEST_ENABLE requires a declared bot-free compiled build')
@@ -218,7 +221,92 @@ def schema_ready(cfg):
     return int(sql(cfg, 'SELECT COUNT(*) FROM classicmangos.creature_template')) > 0
 
 
+def bridge_schema_metadata(cfg, schema='classiccharacters', diagnostics=Path('/realm-data/logs/database-error.log')):
+    """Read metadata only; also usable against an explicitly named disposable fixture."""
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', schema):
+        raise ValueError('invalid bridge schema identifier')
+    where = (f"TABLE_SCHEMA='{schema}' AND TABLE_NAME IN "
+             "('characters','realm_bridge_inflight','realm_bridge_receipts')")
+    tables = sql(cfg, 'SELECT TABLE_NAME,COALESCE(ENGINE,\'\') FROM information_schema.TABLES WHERE '
+                 + where + ' ORDER BY TABLE_NAME', diagnostics=diagnostics)
+    columns = sql(cfg, "SELECT TABLE_NAME,COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,"
+                  "COALESCE(CHARACTER_MAXIMUM_LENGTH,0),COALESCE(COLLATION_NAME,''),EXTRA,'end' "
+                  'FROM information_schema.COLUMNS WHERE ' + where + ' ORDER BY TABLE_NAME,ORDINAL_POSITION',
+                  diagnostics=diagnostics)
+    keys = sql(cfg, 'SELECT TABLE_NAME,COLUMN_NAME,COALESCE(SUB_PART,0) FROM information_schema.STATISTICS WHERE '
+               + where + " AND INDEX_NAME='PRIMARY' ORDER BY TABLE_NAME,SEQ_IN_INDEX", diagnostics=diagnostics)
+    metadata = {'tables': {}, 'columns': {}, 'primary_keys': {}}
+    for line in tables.splitlines():
+        table, engine = line.split('\t')
+        metadata['tables'][table] = engine
+    for line in columns.splitlines():
+        table, name, kind, definition, nullable, length, collation, extra, end = line.split('\t')
+        if end != 'end':
+            raise ValueError('invalid bridge column metadata')
+        metadata['columns'].setdefault(table, {})[name] = dict(
+            data_type=kind, column_type=definition, nullable=nullable, length=int(length),
+            collation=collation, extra=extra)
+    for line in keys.splitlines():
+        table, name, prefix = line.split('\t')
+        metadata['primary_keys'].setdefault(table, []).append((name, int(prefix)))
+    return metadata
+
+
+def validate_bridge_schema(metadata):
+    """Validate the storage contract used by the compiled FIFO and login fence."""
+    required = {
+        'characters': {'guid': 'uint', 'account': 'uint', 'money': 'uint', 'online': 'utinyint'},
+        'realm_bridge_inflight': {'operation_id': 'identity', 'payload': 'payload'},
+        'realm_bridge_receipts': {'operation_id': 'identity', 'payload': 'payload', 'state': 'state',
+                                  'before_money': 'uint', 'after_money': 'uint', 'reason': 'reason'}}
+    for table, fields in required.items():
+        if metadata['tables'].get(table, '').lower() != 'innodb':
+            raise ValueError(table + ' must exist and use InnoDB')
+        primary = 'guid' if table == 'characters' else 'operation_id'
+        if metadata['primary_keys'].get(table) != [(primary, 0)]:
+            raise ValueError(table + ' requires its complete single-column primary key')
+        columns = metadata['columns'].get(table, {})
+        if table != 'characters' and set(columns) != set(fields):
+            raise ValueError(table + ' has missing or unexpected columns')
+        for name, rule in fields.items():
+            column = columns.get(name)
+            if not column or column['nullable'] != 'NO' or column['extra']:
+                raise ValueError(table + '.' + name + ' must be present, stored and NOT NULL')
+            kind, definition = column['data_type'].lower(), column['column_type'].lower()
+            valid = False
+            if rule in ('uint', 'utinyint'):
+                expected = 'int' if rule == 'uint' else 'tinyint'
+                valid = kind == expected and re.fullmatch(expected + r'(\(\d+\))? unsigned', definition)
+            elif rule in ('identity', 'payload'):
+                expected, length = ('char', 64) if rule == 'identity' else ('varchar', 256)
+                valid = (kind == expected and definition == f'{expected}({length})'
+                         and column['length'] == length and column['collation'] == 'ascii_bin')
+            elif rule == 'state':
+                valid = kind == 'enum' and column['column_type'] == "enum('applied','rejected')"
+            elif rule == 'reason':
+                valid = (kind == 'varchar' and column['length'] >= 32
+                         and definition == f"varchar({column['length']})")
+            if not valid:
+                raise ValueError(table + '.' + name + ' has an incompatible type, length or collation')
+
+
+def require_bridge_schema(cfg, root):
+    # The patched login fence reads these tables even with TEST commands off.
+    # Never install/upgrade bridge tables or convert character engines here.
+    if compiled_capabilities(cfg)['CORE_REALM_BRIDGE_COMPILED'] == '0':
+        return
+    try:
+        validate_bridge_schema(bridge_schema_metadata(cfg, diagnostics=root/'logs/database-error.log'))
+    except (RuntimeError, ValueError, KeyError, TypeError) as error:
+        write_private(root/'logs/bridge-schema-error.log', str(error) + '\n')
+        raise RuntimeError(
+            'compiled bridge schema incompatible; keep gameplay stopped and have the operator review '
+            '/opt/railway-core/source/bridge/core/001-world-bridge.sql and '
+            '002-missing-character-reason.sql during maintenance; no automatic schema repair was attempted') from None
+
+
 def bootstrap(cfg, root):
+    STATE['database'] = False
     STATE['phase'] = 'database-wait'
     while not STOP.is_set():
         try:
@@ -247,6 +335,7 @@ def bootstrap(cfg, root):
         if not schema_ready(cfg):
             raise RuntimeError('database installation incomplete; existing data preserved for repair')
     sql(cfg, security_sql(cfg))
+    require_bridge_schema(cfg, root)
     STATE['database'] = True
 
 

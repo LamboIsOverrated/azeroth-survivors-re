@@ -41,7 +41,7 @@ COPY deploy/realm/bridge/core/world-bridge.patch deploy/realm/bridge/core/pinned
 COPY deploy/realm/bridge/tools/apply-patch.mjs deploy/realm/bridge/tools/check_realmd_cli.py /opt/railway-core/source/bridge/tools/
 COPY deploy/realm/core/Dockerfile.bridge /opt/railway-core/source/Dockerfile.bridge
 COPY deploy/realm/core/apply_anticheat.py deploy/realm/core/browser-anticheat.patch deploy/realm/core/anticheat-sources.json deploy/realm/core/BrowserMovementBudget.h deploy/realm/core/movement_budget_test.cpp deploy/realm/core/check_anticheat_dispatch.py /opt/railway-core/source/anticheat/
-ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 REALM_BRIDGE_TEST_ENABLE=0 CORE_BROWSER_MOVEMENT_COMPILED=1 REALM_BROWSER_MOVEMENT_ENABLE=0
+ENV PYTHONUNBUFFERED=1 PORT=8080 CORE_PLAYERBOTS_COMPILED=0 CORE_AHBOT_COMPILED=0 CORE_REALM_BRIDGE_COMPILED=1 REALM_BRIDGE_TEST_ENABLE=0 CORE_BROWSER_MOVEMENT_COMPILED=1 REALM_BROWSER_MOVEMENT_ENABLE=0
 LABEL dev.wenilla.core.revision="de8f72993b9e1faa1bf92dd5505f3daec5cea3ce" \
       dev.wenilla.bridge.phase="TEST-disabled" \
       dev.wenilla.bridge.source="https://github.com/LamboIsOverrated/azeroth-survivors-re/tree/feat/browser-pvp-mmo/deploy/realm/bridge" \
