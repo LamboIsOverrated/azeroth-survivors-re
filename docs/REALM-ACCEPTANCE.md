@@ -6,7 +6,7 @@ Status recorded on 2026-10-28. This is a running **TEST realm**, not a productio
 
 [Open the TEST realm](https://realm-web-pvp-staging.up.railway.app/). The original Survivors preview remains a separate deployment. Accounts are managed through the realm administration page; private operator credentials are kept outside Git.
 
-The deployed web runtime uses the source-built `a3ff560` MMO artifact from [build 40633127654](https://github.com/LamboIsOverrated/azeroth-survivors-re/actions/runs/40633127654). Its archive SHA256 is `b2ebee92c4f4511035043c3745667407ffbd5b213205bde0c73e3bd90e2449bc`. The private core still uses the stock companion binary. The newly compiled movement/bridge binary is being exercised in an isolated restore environment and has not replaced that deployed core.
+The deployed web gateway is at `a365d9a` and uses the source-built `a3ff560` MMO artifact from [build 40633127654](https://github.com/LamboIsOverrated/azeroth-survivors-re/actions/runs/40633127654). Its archive SHA256 is `b2ebee92c4f4511035043c3745667407ffbd5b213205bde0c73e3bd90e2449bc`. All required checks passed before Railway deployed that gateway. The private core still uses the stock companion binary. The newly compiled movement/bridge binary is being exercised in an isolated restore environment and has not replaced that deployed core.
 
 Observed through ordinary player accounts:
 
@@ -16,6 +16,7 @@ Observed through ordinary player accounts:
 - The character's equipment and completed introductory quest survived logout, restart and an independent restored-runtime login.
 - The updated client remained on character selection for 703 seconds and then entered the world. All 5,079 resident placements completed; the quest log still showed the saved quest. This exercises the actual idle-disconnect fix, beyond its wire-level tests.
 - The game toolbar and inventory remain visible at a 1280×720 browser viewport. The wallet panel displays the authenticated character's **last-saved** TEST money and explicitly labels it nonredeemable. An online snapshot is not an authoritative current spendable balance.
+- A fresh browser load of the deployed gateway completed wallet refresh without the earlier overlapping-request error and showed the saved character offline after normal logout. The served market bundle matched the reviewed local build by SHA256 (`c62bf5be0c4b2dc240c9824afe99bd9f808899bc7645dab55e05233a154c9729`).
 
 No wallet was connected and no blockchain transaction was performed during these checks. A healthy HTTP endpoint is supplemented by the actual gameplay checks above; it does not establish capacity, complete content coverage or financial readiness.
 
