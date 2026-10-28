@@ -31,6 +31,8 @@ struct Step {
     flags: u32,
     offset: [f32; 3],
     accept: bool,
+    #[serde(default)]
+    clear_flags: u32,
     #[serde(default = "default_observe_ms")]
     observe_ms: u64,
     #[serde(default)]
@@ -58,6 +60,16 @@ struct Fixture {
     steps: Vec<Step>,
     #[serde(default)]
     create_missing_characters: bool,
+}
+
+fn relay_safe(forbidden: &[([f32; 3], u32)], position: [f32; 3], flags: u32) -> bool {
+    forbidden.iter().all(|(pose, mask)| {
+        if *mask == 0 {
+            distance(*pose, position) > 0.1
+        } else {
+            flags & mask == 0
+        }
+    })
 }
 
 fn default_observe_ms() -> u64 {
@@ -153,6 +165,13 @@ fn validate(f: &Fixture) -> Result<()> {
                 "invalid jump"
             );
         }
+        ensure!(
+            s.clear_flags == 0
+                || (!s.accept
+                    && s.clear_flags & !s.flags == 0
+                    && distance(s.offset, [0.; 3]) <= 2.),
+            "flag-clear correction requires a bounded ordinary pose and subset of requested flags"
+        );
         if !s.accept {
             ensure!(
                 i + 1 < f.steps.len() && f.steps[i + 1].accept,
@@ -320,7 +339,7 @@ struct Run {
     peers: [Peer; 2],
     rx: mpsc::Receiver<Input>,
     evidence: Evidence,
-    forbidden: Vec<[f32; 3]>,
+    forbidden: Vec<([f32; 3], u32)>,
     relays: Vec<[f32; 3]>,
     sent: usize,
     map: u32,
@@ -362,9 +381,19 @@ impl Run {
                 if side == 1 && *guid == self.peers[0].guid {
                     self.evidence.write(json!({"event":"accepted-relay","pose":position,"flags":flags,"wire_time":time}))?;
                     ensure!(
-                        self.forbidden.iter().all(|p| distance(*p, *position) > 0.1),
-                        "server relayed a forbidden pose"
+                        relay_safe(&self.forbidden, *position, *flags),
+                        "server relayed forbidden pose or movement capability"
                     );
+                    if self
+                        .forbidden
+                        .iter()
+                        .any(|(p, mask)| *mask != 0 && distance(*p, *position) < 0.1)
+                    {
+                        self.peers[0].pose = *position;
+                        self.evidence.write(
+                            json!({"event":"corrected-relay","pose":position,"flags":flags}),
+                        )?;
+                    }
                     self.relays.push(*position);
                 }
             }
@@ -457,7 +486,7 @@ impl Run {
         let pos = std::array::from_fn(|i| f.origin[i] + s.offset[i]);
         self.relays.clear();
         if !s.accept {
-            self.forbidden.push(pos);
+            self.forbidden.push((pos, s.clear_flags));
         }
         let jump = s.jump.map(|j| JumpInfo {
             zspeed: j[0],
@@ -474,7 +503,7 @@ impl Run {
             },
             orientation: 0.,
         });
-        self.evidence.write(json!({"event":"send","case":s.name,"opcode":s.opcode,"flags":s.flags,"pose":pos,"expected_accept":s.accept}))?;
+        self.evidence.write(json!({"event":"send","case":s.name,"opcode":s.opcode,"flags":s.flags,"pose":pos,"expected_accept":s.accept,"clear_flags":s.clear_flags}))?;
         let p = &mut self.peers[0];
         p.writer.send_movement(
             s.opcode,
@@ -497,7 +526,7 @@ impl Run {
             self.peers[0].pose = pos;
         }
         self.evidence.write(json!({"event":"step-complete","case":s.name,"positive_relay":s.accept,
-            "note":if s.accept {"accepted by world"} else {"no forbidden relay; next recovery and saved pose still required"}}))?;
+            "note":if s.accept {"accepted by world"} else if s.clear_flags!=0 {"no prohibited capability relay; corrected ground pose permitted; recovery and saved pose still required"} else {"no forbidden relay; next recovery and saved pose still required"}}))?;
         Ok(())
     }
 }
@@ -636,6 +665,26 @@ mod tests {
         assert!(should_create(id, &["SomeonesAvatar".into()], true).is_err());
     }
     #[test]
+    fn rejection_proof_distinguishes_removed_flags_from_forbidden_motion() {
+        let policy = [([1., 2., 3.], 0x800000)];
+        assert!(relay_safe(&policy, [1., 2., 3.], 0));
+        assert!(!relay_safe(&policy, [1., 2., 3.], 0x800000));
+        assert!(!relay_safe(&policy, [9., 2., 3.], 0x800000));
+        assert!(!relay_safe(&[([1., 2., 3.], 0)], [1., 2., 3.], 0));
+        assert!(relay_safe(&[([1., 2., 3.], 0)], [2., 2., 3.], 0));
+    }
+    #[test]
+    fn fixture_flight_flag_matches_pinned_cmangos_object_h() {
+        let v: Value = serde_json::from_str(include_str!("../fixture.template.json")).unwrap();
+        let step = v["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "unauthorized-flight")
+            .unwrap();
+        assert_eq!(step["flags"], json!(0x800)); // Object.h MOVEFLAG_FLYING, not FLYING_OLD.
+    }
+    #[test]
     fn valid_isolated_noncombat_fixture() {
         validate(&fixture()).unwrap();
     }
@@ -655,6 +704,13 @@ mod tests {
     }
     #[test]
     fn refusal_requires_distinct_positive_recovery_and_no_unbounded_stream() {
+        let mut f = fixture();
+        f.steps[1].clear_flags = 2;
+        assert!(validate(&f).is_err());
+        let mut f = fixture();
+        f.steps[1].flags = 1;
+        f.steps[1].clear_flags = 1;
+        assert!(validate(&f).is_err());
         let mut f = fixture();
         f.steps.pop();
         assert!(validate(&f).is_err());

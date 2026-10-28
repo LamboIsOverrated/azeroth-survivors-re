@@ -72,7 +72,9 @@ inbound packets per peer. Authentication/roster exchanges are separately bounded
 by the existing protocol handshake and the overall deadline. No queue wait is
 accepted. A deadline exits 124, any other failure exits nonzero.
 
-`flags` is the 1.12 word. `jump`, if present, is
+`flags` uses the pinned CMaNGOS `Entities/Object.h` values. In particular
+`MOVEFLAG_FLYING=0x800`, `CAN_FLY=0x800000`, `LEVITATING=0x400`; the
+legacy `FLYING_OLD=0x01000000` is a distinct bit and is not this flight test. `jump`, if present, is
 `[down-positive vertical speed, cos, sin, horizontal speed]` and requires flag
 `0x2000`; `fall_ms` is the declared client fall time. `transport`, if present,
 is a GUID with zero local offsets and requires `0x02000000`: this tool supports
@@ -83,9 +85,18 @@ opcodes are permitted. Arbitrary client opcodes cannot be injected.
 A positive step requires the observer's actual `UnitMove` relay for the primary
 at that pose. The transcript records local monotonic receipt time, flags and the
 uninterpreted wire timestamp; it does not assume the server replaced client time.
-A refused step registers a forbidden pose for the rest of the run, requires
+A refused position step registers a forbidden pose for the rest of the run, requires
 immediate distinct positive recovery, and fails if the observer ever receives
 the forged pose. A refused pose may not overlap any planned positive pose.
+An optional `clear_flags` mask on a refused flag step permits a corrected relay
+only with every specified capability bit removed; any later relay retaining a
+prohibited bit fails even at a different position. This mode requires a mask
+contained in the requested flags and a position within two yards of origin.
+It cannot waive the forbidden-position rule for distance, high Z or collision
+attacks. Pinned stock heuristics remove CAN_FLY/LEVITATING and some aura flags
+before the custom validator, so a safe corrected ground move is distinct from
+accepting a forged capability. Corrected relays are recorded explicitly and
+still require positive recovery and saved-position proof.
 The last positive returns to origin. The primary must then receive logout
 completion and a fresh encrypted login/roster must report the same saved pose.
 The observer must also complete logout. Packet silence alone never completes a
