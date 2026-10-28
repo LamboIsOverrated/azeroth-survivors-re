@@ -233,8 +233,8 @@ windows, health/combat, packet, terrain and movement checks are unchanged.
 `relative_to_knockback` uses the last accepted primary pose. With
 `ballistic_from_knockback`, the offset must be zero, flags must be falling, and
 the jump tail comes exclusively from the actual server launch. Up to two seconds
-of trajectory uses its monotonic receipt clock, the pinned gravity and terminal
-speed. A private `terrain` grid provides measured ground heights, interpolated
+of trajectory uses the matching ACK's monotonic application clock, the pinned
+gravity and terminal speed. A private `terrain` grid provides measured ground heights, interpolated
 without extrapolation; its source map name/SHA are operator attestations that
 must match the verified server files. No assets are bundled or modified. The
 running server still verifies every proposed collision, floor and trajectory.
@@ -249,6 +249,44 @@ move refusal after the wait, `ground_from_knockback` recovery on surveyed ground
 and ordinary `terrain_follow` walking back to origin. The last step must complete
 that return. Preserve actual native rejection reasons, positive relays, health,
 security and saved-position evidence before claiming the world test passed.
+
+For the reviewed pending-receipt server policy, a gate may additionally set
+`"first_ack_probe": {"delay_ms": 499}` or `3000`. These are the only accepted
+delays. This phase requires the declared westward `[-10,-1,0,10]` launch, actual
+initial native run speed7, received self money0, the existing HP60/combat guards,
+and a survey covering the last accepted pose plus3.493 yards in worldY. It never
+creates a server launch or sends an operator action. After the one attended cast,
+it sends four finite deliberately invalid ACKs using that actual native receipt:
+wrong counter, wrong quad,39-yard origin, and+10-yardZ origin. Each must produce
+no primary movement relay during its bounded observation window. Then ordinary
+`START_FORWARD` at the last reported pose must relay positively. After the
+configured delay from that packet, the matching one-shot ACK proposes the
+surveyed+Y3.493 origin. Its observer relay is required, a replay must not relay,
+and subsequent ballistic points must relay. Native logs remain necessary to
+attribute each refusal; absence of a relay alone is not a reason diagnosis.
+
+The evidence records the actual ordinary-packet delay and total native-receipt
+age at matching ACK. Negative trials add time before the ordinary packet, so
+`3000` is not a claim of exactly3.000 seconds from the original server launch.
+The trajectory clock begins at matching-ACK write, while the absolute61-second
+expiry wait still begins at the original received launch and is never renewed
+by ACK, replay or recovery. Wire fall-time fields do not determine either clock.
+This is an encrypted packet acceptance test of a physically budgeted stale-pose
+scenario; it does not prove continuous rendered running/flight or reproduce a
+specific browser heartbeat interval. Those require the attended ordinary client.
+
+Post-expiry `terrain_follow` steps may set `return_towards_origin: true` with
+zero offset. Each proposes at most one yard in XY toward the measured original
+pose and getsZ only from the survey. Both endpoints must be surveyed; there is
+no extrapolation, server placement or distance exemption. Repeat enough bounded
+steps for the measured flight corridor, finish with ordinary stop, and require
+the existing fresh saved-pose check. This avoids assuming a fixed landingX when
+ACK-observation latency changes the real first flight sample.
+
+`--validate-only` checks fixture structure before any credential loading,
+connection or evidence-file creation. It does not verify source/image/operator
+attestations. Pending-image private draft fixtures deliberately fail preflight
+until the independently verified artifact and fresh evidence paths are bound.
 
 The probe watches received ordinary-avatar health and `UNIT_FLAG_IN_COMBAT`.
 Combat or a health change aborts; an unintended combat cast cannot silently

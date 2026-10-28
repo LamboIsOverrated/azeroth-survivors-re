@@ -43,6 +43,8 @@ struct SpeedGate {
 struct KnockbackGate {
     launch: [f32; 4],
     timeout_ms: u64,
+    #[serde(default)]
+    first_ack_probe: Option<phases::FirstAckProbe>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +73,8 @@ struct Step {
     ground_from_knockback: bool,
     #[serde(default)]
     terrain_follow: bool,
+    #[serde(default)]
+    return_towards_origin: bool,
     #[serde(default)]
     relative_to_teleport: bool,
     #[serde(default)]
@@ -154,6 +158,7 @@ fn default_hold_seconds() -> u64 {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
+    ValidateOnly,
     Movement,
     CreateOnly,
     HoldOnline,
@@ -162,6 +167,7 @@ enum Mode {
 }
 fn parse_mode(arg: Option<&str>) -> Result<Mode> {
     match arg {
+        Some("--validate-only") => Ok(Mode::ValidateOnly),
         None => Ok(Mode::Movement),
         Some("--create-only") => Ok(Mode::CreateOnly),
         Some("--hold-online") => Ok(Mode::HoldOnline),
@@ -190,6 +196,13 @@ fn operator_wait_grace_ms(f: &Fixture) -> u64 {
         .filter_map(|s| s.await_knockback.as_ref())
         .map(|gate| gate.timeout_ms.saturating_sub(30000))
         .sum()
+}
+fn has_first_ack_probe(f: &Fixture) -> bool {
+    f.steps.iter().any(|s| {
+        s.await_knockback
+            .as_ref()
+            .is_some_and(|g| g.first_ack_probe.is_some())
+    })
 }
 fn validate(f: &Fixture) -> Result<()> {
     ensure!(f.version == 1 && f.isolated, "require isolated fixture v1");
@@ -288,6 +301,18 @@ fn validate(f: &Fixture) -> Result<()> {
                 "invalid bounded knockback gate"
             );
             ensure!(f.terrain.is_some(), "knockback needs measured terrain");
+            if let Some(probe) = &gate.first_ack_probe {
+                probe.validate()?;
+                ensure!(
+                    s.ballistic_from_knockback && s.relative_to_knockback && s.accept,
+                    "first ACK probe must finish with positive native ballistic evidence"
+                );
+                ensure!(
+                    phases::launch_matches([-10., -1., 0., 10.], gate.launch),
+                    "moving ACK requires the declared westward launch"
+                );
+                probe.origin(f.origin, f.terrain.as_ref().unwrap())?;
+            }
             has_knockback = true;
         }
         ensure!(
@@ -322,6 +347,15 @@ fn validate(f: &Fixture) -> Result<()> {
         ensure!(
             !s.terrain_follow || (has_knockback && s.flags & 8192 == 0 && s.offset[2] == 0.),
             "terrain walking requires measured nonairborne phase"
+        );
+        ensure!(
+            !s.return_towards_origin
+                || (has_expiry_wait
+                    && s.terrain_follow
+                    && s.accept
+                    && s.offset == [0.; 3]
+                    && !s.relative_to_knockback),
+            "bounded return requires post-expiry surveyed ordinary recovery"
         );
         if let Some(gate) = &s.await_run_speed {
             ensure!(
@@ -427,6 +461,10 @@ fn validate(f: &Fixture) -> Result<()> {
                 + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.await_run_speed.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.await_knockback.as_ref().map_or(0, |g| g.timeout_ms)
+                + s.await_knockback
+                    .as_ref()
+                    .and_then(|g| g.first_ack_probe.as_ref())
+                    .map_or(0, |p| p.delay_ms + 2000)
                 + s.wait_knockback_age_ms.unwrap_or(0))
             .sum::<u64>()
             <= 110000 + operator_wait_grace_ms(f),
@@ -588,7 +626,28 @@ struct TeleportReceipt {
 struct KnockbackReceipt {
     origin: [f32; 3],
     launch: [f32; 4],
+    counter: u32,
     at: Instant,
+    applied: Option<Instant>,
+}
+impl KnockbackReceipt {
+    fn flight_ms(&self) -> Result<u64> {
+        let clock = phases::ReceiptClock {
+            issued_ms: 0,
+            applied_ms: u64::try_from(
+                self.applied
+                    .context("matching ACK not applied")?
+                    .duration_since(self.at)
+                    .as_millis(),
+            )?,
+        };
+        let now = u64::try_from(self.at.elapsed().as_millis())?;
+        ensure!(
+            clock.issue_age_ms(now)? <= 60000,
+            "launch authority expired"
+        );
+        clock.flight_ms(now)
+    }
 }
 struct Run {
     peers: Vec<Peer>,
@@ -607,6 +666,8 @@ struct Run {
     knockback: Option<KnockbackReceipt>,
     terrain: Option<phases::TerrainGrid>,
     health: phases::HealthGuard,
+    require_money_zero: bool,
+    money: Option<u32>,
     initial_run_speed: Option<f32>,
     teleport: Option<TeleportReceipt>,
     capture: Option<observe::Capture>,
@@ -691,6 +752,13 @@ impl Run {
                 _ => None,
             };
             if let Some(fields) = fields {
+                if side == 0 && self.require_money_zero {
+                    if let Some(money) = fields.player_money() {
+                        self.evidence.write(json!({"event":"native-money-observation","guid":primary_guid,"money":money}))?;
+                        phases::require_zero_money(Some(money))?;
+                        self.money = Some(money);
+                    }
+                }
                 let health = fields.unit_health();
                 let flags = fields.unit_flags();
                 let baseline = self.health.baseline[side];
@@ -886,25 +954,114 @@ impl Run {
                         "unexpected or mismatched server knockback"
                     );
                     let origin = p.pose;
-                    p.writer.knock_back_ack(
-                        guid,
-                        counter,
-                        launch,
-                        8192,
-                        (origin, p.orientation),
-                        None,
-                    )?;
                     self.knockback = Some(KnockbackReceipt {
                         origin,
                         launch: quad,
+                        counter,
                         at: Instant::now(),
+                        applied: None,
                     });
                     self.expected_knockback = None;
-                    self.evidence.write(json!({"event":"server-knockback-ack-sent","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
+                    self.evidence.write(json!({"event":"server-knockback-received","guid":guid,"counter":counter,"launch":quad,"origin":origin}))?;
                 }
                 _ => {}
             }
             self.count()?;
+        }
+        Ok(())
+    }
+    fn send_knock_ack(
+        &mut self,
+        counter: u32,
+        quad: [f32; 4],
+        pose: [f32; 3],
+        case: &str,
+    ) -> Result<()> {
+        let p = &mut self.peers[0];
+        p.writer.knock_back_ack(
+            p.guid,
+            counter,
+            JumpInfo {
+                zspeed: quad[0],
+                cos_angle: quad[1],
+                sin_angle: quad[2],
+                xy_speed: quad[3],
+            },
+            8192,
+            (pose, p.orientation),
+            None,
+        )?;
+        self.evidence.write(json!({"event":"knockback-ack-attempt","case":case,"counter":counter,"launch":quad,"origin":pose}))?;
+        self.count()
+    }
+    fn apply_knock_ack(&mut self, probe: Option<&phases::FirstAckProbe>) -> Result<()> {
+        let receipt = self.knockback.as_ref().context("native launch missing")?;
+        let (counter, quad, baseline) = (receipt.counter, receipt.launch, receipt.origin);
+        let mut origin = baseline;
+        if let Some(probe) = probe {
+            let terrain = self.terrain.as_ref().context("survey missing")?;
+            origin = probe.origin(baseline, terrain)?;
+            // These intentionally malformed client responses use the actual issued
+            // receipt. No SMSG launch, operator action or server position is forged.
+            for trial in phases::negative_ack_trials(counter, quad, baseline)? {
+                let phases::AckTrial {
+                    case,
+                    counter: c,
+                    launch: q,
+                    pose: pos,
+                } = trial;
+                self.relays.clear();
+                self.send_knock_ack(c, q, pos, case)?;
+                self.pump(Duration::from_millis(200))?;
+                ensure!(self.relays.is_empty(), "invalid ACK relayed: {case}");
+                self.evidence.write(json!({"event":"knockback-ack-refusal-observed","case":case,"native_reason_requires_operator_logs":true}))?;
+            }
+            // Re-establish the actual last reported ordinary pose after negatives.
+            // The new server pending-receipt seam must validate this through its
+            // ordinary policy, preserving the same receipt for a subsequent ACK.
+            self.relays.clear();
+            let p = &mut self.peers[0];
+            p.writer.send_movement(
+                op::MSG_MOVE_START_FORWARD,
+                1,
+                baseline,
+                p.orientation,
+                0.,
+                0,
+                None,
+                None,
+            )?;
+            let started = Instant::now();
+            self.count()?;
+            self.evidence.write(json!({"event":"moving-ack-ordinary-start","pose":baseline,"requested_delay_ms":probe.delay_ms,"ack_origin":origin}))?;
+            self.pump(Duration::from_millis(probe.delay_ms))?;
+            ensure!(
+                self.relays.iter().any(|p| distance(*p, baseline) < 0.1),
+                "ordinary pending-receipt movement was not relayed"
+            );
+            self.evidence.write(json!({"event":"moving-ack-ordinary-budget-elapsed","actual_delay_ms":started.elapsed().as_millis(),"displacement_y":3.493}))?;
+        }
+        self.relays.clear();
+        let applied = Instant::now();
+        self.send_knock_ack(counter, quad, origin, "matching-first-ack")?;
+        let receipt = self.knockback.as_mut().unwrap();
+        receipt.origin = origin;
+        receipt.applied = Some(applied);
+        self.evidence.write(json!({"event":"server-knockback-ack-sent","counter":counter,"launch":quad,"origin":origin,"issue_age_ms":receipt.at.elapsed().as_millis(),"trajectory_clock":"matching-ACK write; absolute expiry remains initial native receipt"}))?;
+        if probe.is_some() {
+            self.pump(Duration::from_millis(200))?;
+            ensure!(
+                self.relays.iter().any(|p| distance(*p, origin) < 0.1),
+                "matching first ACK not relayed"
+            );
+            self.peers[0].pose = origin;
+            self.evidence
+                .write(json!({"event":"matching-first-ack-observer-confirmed","origin":origin}))?;
+            self.relays.clear();
+            self.send_knock_ack(counter, quad, origin, "one-shot-replay")?;
+            self.pump(Duration::from_millis(200))?;
+            ensure!(self.relays.is_empty(), "one-shot ACK replay relayed");
+            self.evidence.write(json!({"event":"knockback-ack-refusal-observed","case":"one-shot-replay","native_reason_requires_operator_logs":true}))?;
         }
         Ok(())
     }
@@ -952,6 +1109,7 @@ impl Run {
                 self.expected_knockback.is_none() && self.knockback.is_some(),
                 "expected server knockback did not arrive"
             );
+            self.apply_knock_ack(gate.first_ack_probe.as_ref())?;
         }
         if let Some(age) = s.wait_knockback_age_ms {
             self.evidence.write(json!({"event":"withholding-landing-until-expiry","age_ms":age,"no_land_or_swim":true}))?;
@@ -979,20 +1137,27 @@ impl Run {
             f.origin
         };
         let mut pos = std::array::from_fn(|i| base[i] + s.offset[i]);
+        if s.return_towards_origin {
+            pos = phases::ordinary_return(
+                self.peers[0].pose,
+                f.origin,
+                self.terrain.as_ref().context("return survey missing")?,
+            )?;
+        }
         let fall_ms = if s.ballistic_from_knockback {
             let kb = self
                 .knockback
                 .as_ref()
                 .context("actual knockback receipt missing")?;
-            let elapsed = kb.at.elapsed();
-            pos = phases::ballistic_position(kb.origin, kb.launch, elapsed.as_secs_f64())?;
+            let elapsed = kb.flight_ms()?;
+            pos = phases::ballistic_position(kb.origin, kb.launch, elapsed as f64 / 1000.)?;
             pos[2] = pos[2].max(
                 self.terrain
                     .as_ref()
                     .context("terrain missing")?
                     .height(pos[0], pos[1])?,
             );
-            u32::try_from(elapsed.as_millis())?
+            u32::try_from(elapsed)?
         } else if s.fall_from_teleport {
             let elapsed = self.teleport.as_ref().unwrap().at.elapsed();
             pos = phases::fall_position(pos, elapsed.as_secs_f64(), f.origin[2])?;
@@ -1114,6 +1279,10 @@ fn observe_refusal(f: &Fixture, pass: &str, evidence: &mut Evidence) -> Result<(
 
 fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
     ensure!(
+        mode != Mode::ValidateOnly,
+        "validation-only cannot execute sessions"
+    );
+    ensure!(
         (mode == Mode::ObservePlayer) == f.observation.is_some(),
         "observation fixture and explicit observer-only mode must match"
     );
@@ -1212,6 +1381,8 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         knockback: None,
         terrain: f.terrain.clone(),
         health: Default::default(),
+        require_money_zero: has_first_ack_probe(f),
+        money: None,
         initial_run_speed: None,
         teleport: None,
         capture: f.observation.as_ref().map(|o| observe::Capture {
@@ -1228,8 +1399,11 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         run.health.baseline[0] == Some(60),
         "initial self health60 must be received before actions"
     );
-    if f.steps.iter().any(|s| s.await_run_speed.is_some()) {
+    if f.steps.iter().any(|s| s.await_run_speed.is_some()) || has_first_ack_probe(f) {
         phases::require_initial_run_speed(run.initial_run_speed)?;
+    }
+    if has_first_ack_probe(f) {
+        phases::require_zero_money(run.money)?;
     }
     ensure!(
         distance(run.peers[0].pose, f.origin) < 0.1
@@ -1295,7 +1469,7 @@ fn main() -> Result<()> {
     let args: Vec<_> = env::args_os().collect();
     ensure!(
         args.len()==3 || args.len()==4,
-        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--create-only|--hold-online|--expect-login-refusal|--observe-player]"
+        "usage: realm-movement-probe PRIVATE-FIXTURE.json NEW-EVIDENCE.jsonl [--validate-only|--create-only|--hold-online|--expect-login-refusal|--observe-player]"
     );
     let raw = fs::read(&args[1])?;
     ensure!(raw.len() <= 65536, "fixture too large");
@@ -1306,6 +1480,10 @@ fn main() -> Result<()> {
             .map(|a| a.to_str().context("mode must be UTF-8"))
             .transpose()?,
     )?;
+    if mode == Mode::ValidateOnly {
+        println!("Fixture structure verified; no connection or evidence file created. Artifact and operator attestations remain external.");
+        return Ok(());
+    }
     execute(&f, &raw, Path::new(&args[2]), mode)
 }
 
@@ -1357,6 +1535,19 @@ mod tests {
     }
     #[test]
     fn explicit_modes_never_fall_back_on_unknown_action() {
+        assert_eq!(
+            parse_mode(Some("--validate-only")).unwrap(),
+            Mode::ValidateOnly
+        );
+        assert!(execute(
+            &fixture(),
+            &[],
+            Path::new("unused-validation-output"),
+            Mode::ValidateOnly
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("cannot execute"));
         assert_eq!(parse_mode(None).unwrap(), Mode::Movement);
         assert_eq!(parse_mode(Some("--create-only")).unwrap(), Mode::CreateOnly);
         assert_eq!(parse_mode(Some("--hold-online")).unwrap(), Mode::HoldOnline);
@@ -1527,6 +1718,46 @@ mod tests {
         f.steps[2].wait_knockback_age_ms = Some(100);
         assert!(validate(&f).is_err());
         f.steps[2].wait_knockback_age_ms = Some(61000);
+        f.terrain.as_mut().unwrap().ny = 13;
+        f.terrain.as_mut().unwrap().heights = vec![3.; 35 * 13];
+        f.steps[1].await_knockback.as_mut().unwrap().first_ack_probe =
+            Some(phases::FirstAckProbe { delay_ms: 499 });
+        validate(&f).unwrap();
+        f.steps[1]
+            .await_knockback
+            .as_mut()
+            .unwrap()
+            .first_ack_probe
+            .as_mut()
+            .unwrap()
+            .delay_ms = 3000;
+        validate(&f).unwrap();
+        f.steps[1]
+            .await_knockback
+            .as_mut()
+            .unwrap()
+            .first_ack_probe
+            .as_mut()
+            .unwrap()
+            .delay_ms = 3001;
+        assert!(validate(&f).is_err());
+        f.steps[1]
+            .await_knockback
+            .as_mut()
+            .unwrap()
+            .first_ack_probe
+            .as_mut()
+            .unwrap()
+            .delay_ms = 499;
+        f.steps[1].ballistic_from_knockback = false;
+        assert!(validate(&f).is_err());
+        f.steps[1].ballistic_from_knockback = true;
+        f.steps[1].await_knockback.as_mut().unwrap().launch[1] = 1.;
+        assert!(validate(&f).is_err());
+        f.steps[1].await_knockback.as_mut().unwrap().launch[1] = -1.;
+        f.terrain.as_mut().unwrap().ny = 9;
+        f.terrain.as_mut().unwrap().heights.truncate(35 * 9);
+        assert!(validate(&f).is_err());
         f.terrain = None;
         assert!(validate(&f).is_err());
     }
