@@ -30,6 +30,7 @@ class RuntimeTests(unittest.TestCase):
     def test_config_rejects_injected_password_host_and_domain(self):
         for key, value in [('DB_MANGOS_PASSWORD', 'abc;def'), ('DB_HOST', 'x\nGameType=0'),
                            ('DB_ROOT_PASSWORD', "x' OR 1=1"), ('REALM_DOMAIN', 'https://x'),
+                           ('REALM_DOMAIN', 'realm-web-pvp-staging.up.railway.app'),
                            ('SOAP_ADMIN_USERNAME', 'ADMINISTRATOR')]:
             env = self.env()
             env[key] = value

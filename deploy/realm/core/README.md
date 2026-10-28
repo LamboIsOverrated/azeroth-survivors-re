@@ -14,6 +14,7 @@ Required environment:
   secrets, 12-128 characters from A-Z/a-z/0-9/underscore/hyphen. This restriction
   prevents ambiguity in the core's semicolon-separated database configuration.
 - `REALM_DOMAIN`: private core hostname, default `realm-core.railway.internal`.
+  Maximum 32 characters, matching the pinned Classic database address field.
 - `SOAP_ADMIN_USERNAME`: separate uppercase operator account, 3-16 alphanumeric or
   underscore characters. Seeded example account names are rejected.
 - `SOAP_ADMIN_PASSWORD`: generated 12-16 alphanumeric characters (Vanilla limit).
@@ -34,6 +35,9 @@ or operator secrets; generated core configuration supplies its scoped SQL login.
 Only configuration/log permissions are adjusted before launch. Existing healthy
 databases are preserved. A partial/interrupted schema fails closed and requires
 private operator repair/restore; it is never automatically erased or replaced.
+Failed initialization leaves `/status` at `initialization-failed` and readiness
+false while retaining SSH access. SQL errors are recorded with mode 0600 at
+`/realm-data/logs/database-error.log`; public logs show only the error number.
 Take all four database backups before schema changes. The upstream installer
 builds PlayerBots tables even with its flag off; all bot runtime settings remain
 disabled. Bootstrap root credentials are not passed to the game processes

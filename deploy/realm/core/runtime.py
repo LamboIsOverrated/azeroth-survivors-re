@@ -30,6 +30,8 @@ def settings(env):
         cfg.setdefault(key, default)
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', cfg[key]):
             raise ValueError(key + ' must be a hostname')
+    if len(cfg['REALM_DOMAIN']) > 32:
+        raise ValueError('REALM_DOMAIN must fit Classic realmlist.address (32 chars); use private core DNS')
     for key, default in [('DB_PORT', '3306'), ('PORT', '8080'), ('EXTRACT_THREADS', '2')]:
         value = str(cfg.get(key, default))
         if not value.isdigit() or not 1 <= int(value) <= (64 if key == 'EXTRACT_THREADS' else 65535):
