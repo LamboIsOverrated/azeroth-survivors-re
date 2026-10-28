@@ -1,6 +1,6 @@
 # Realm wallet market
 
-This module trades SOL and the configured launch token in a player's verified, linked
+This module supports a restricted route envelope for SOL and the configured launch token in a player's verified, linked
 Phantom or Solflare wallet. It does not move game currency, fund an account vault, make
 TEST units redeemable, or enable deposits or withdrawals. There is no custody or server
 wallet signer.
@@ -42,6 +42,7 @@ Required configuration:
   Decimals are otherwise read directly from the mint account.
 - Optional `ECONOMY_TOKEN_SYMBOL` / `GAME_TOKEN_SYMBOL`, and `JUPITER_API_KEY` for
   the operator's Jupiter production API access and rate limits.
+- Optional `MARKET_MAX_SLIPPAGE_BPS`: 0 through 100; defaults to 100 (1%).
 
 The RPC must report the mainnet genesis and a finalized, initialized 82-byte classic
 SPL mint owned by the SPL Token program. Token-2022 extension mints are deliberately
@@ -49,6 +50,31 @@ not accepted by this integration. Successful validation is cached for 30 seconds
 failed validation for 5 seconds. An unset contract or either disabled launch flag
 makes no RPC or trading requests. A valid mint does not prove liquidity: missing or
 unbuildable Jupiter routes fail honestly without presenting an executable quote.
+
+## Supported route envelope and remaining launch validation
+
+Only Jupiter v6 `route`, one 100% Raydium AMM v4 hop, exact input, classic SPL tokens,
+and zero platform fee are supported. The parser checks the discriminator, Borsh
+route plan, encoded input and output amounts, slippage ceiling, transfer authority,
+source/destination ATAs, output mint and Raydium account positions. The minimum
+output comes from the encoded instruction and appears in the review. RFQ, shared
+accounts, token-ledger routes, exact-output routes, newer instruction variants,
+nonzero platform fees and other DEX/router formats are rejected.
+
+This deliberately narrow coverage may reject the default Jupiter V2 quote for the
+future launch pool. A configured token contract alone is **not a launch-readiness
+claim**: the actual pool and executable route must match this envelope or receive
+an independently reviewed extension first. No live route or transaction has been
+validated in this task. Test fixtures model the serialized instruction/account
+envelope and trusted RPC snapshots; they are not live pool executions.
+
+The fixed RPC resolves address lookup tables and verifies executable programs,
+pool/vault ownership, and token mints/authorities. The exact message is simulated
+before issuing a quote and revalidated before submission. Wallet SOL, token input,
+minimum output and token authority changes must match the parsed route. Top-level
+instructions are restricted to canonical ATA creation, native SOL funding/sync/close,
+the supported Jupiter swap, and bounded compute budget instructions. Arbitrary SOL
+transfers, approvals and authority changes are rejected.
 
 ## HTTP contract
 
@@ -60,7 +86,8 @@ Origin, JSON content type, and `x-realm-market: 1`. Cross-site requests are reje
 - `POST /api/market/order`: `{direction:'sol-to-token'|'token-to-sol', amount:'123'}`.
   Amount is a positive integer base-unit string within u64, never a JavaScript number.
   Response includes a local `orderId`, exact base64 transaction, `inAmount`,
-  `outAmount`, fixed pair, fee metadata, and `expiresAt` in milliseconds.
+  `outAmount`, encoded `minimumOut`, fixed pair, validated `networkFeeLamports`, and
+  `expiresAt` in milliseconds.
 - `POST /api/market/execute`: `{orderId, signedTransaction}`. Exact message bytes,
   session/account, current bound wallet, pair, input amount and expiry are bound to
   the issued order. The wallet must be the transaction fee payer and produce a valid
@@ -69,19 +96,23 @@ Origin, JSON content type, and `x-realm-market: 1`. Cross-site requests are reje
   using `getSignatureStatuses` without resubmitting it. It returns `NotSubmitted`
   if no submission was made. `Pending` uses HTTP 202; `Success` and `Failed` use 200.
 
-Quotes last at most 60 seconds, shortened by RFQ expiry, and their block height is
+Quotes last at most 60 seconds, shortened by any upstream expiry, and their block height is
 checked before submission when supplied. Browser quoting never opens a signature
 prompt. Review and explicit **Sign and submit swap** are separate actions. Exact
 decimal parsing uses integers throughout; it never rounds.
 
-Any transport error or ambiguous Jupiter execute result remains **Pending**. A second
+Jupiter execute JSON, including `Success`, never confirms a transaction. Only a
+confirmed/finalized result for the stored transaction signature from the fixed RPC
+can establish `Success` or `Failed`. Any transport error or ambiguous result remains **Pending**. A second
 execute request cannot send the order again. Pending checks reconcile confirmed or
 finalized chain outcomes; a missing signature is not labelled a failed transaction.
 The browser retains only a pending order ID/signature in session storage so a reload
 continues to block accidental replacement swaps. Always inspect the supplied explorer
 link before trading again if the status cannot be resolved.
 
-Order records are process-local, bounded, and retained up to one day. A gateway restart
+Expired unsubmitted quotes are discarded after a one-minute grace period. Active
+orders have separate per-account/global caps; submitted records are retained up to
+one day, with a 10,000-record memory ceiling. A gateway restart
 loses those records: old order IDs fail closed and the explorer signature remains the
 recovery reference. Run a single gateway instance or use sticky routing for live
 quotes; a distributed/durable order store is required before horizontally scaling.
@@ -95,5 +126,8 @@ mocked RPC/Jupiter responses; tests never fund wallets or send real transactions
 Jupiter primary references verified for this implementation:
 [Order & Execute](https://developers.jup.ag/docs/swap/order-and-execute),
 [Get Order](https://developers.jup.ag/docs/api-reference/swap/order).
+Instruction/account layouts and program IDs were checked against the official
+[Jupiter CPI IDL](https://github.com/jup-ag/jupiter-cpi/blob/main/idl.json) and
+[Raydium program IDs](https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/common/programId.ts).
 Requests use `https://api.jup.ag/swap/v2/order` and `/execute`, with
 `maxSupportedTransactionVersion=0` for the installed web3.js 1.x and injected wallets.

@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import { parseUnits,formatUnits,chooseProvider,createMarketSession } from '../client.mjs';
+import {routeFixture} from './route-fixture.mjs';
 const signer=Keypair.fromSeed(new Uint8Array(32).fill(37)),other=Keypair.fromSeed(new Uint8Array(32).fill(38));
 const wallet=signer.publicKey.toBase58();
-const tx=()=>new VersionedTransaction(new TransactionMessage({payerKey:signer.publicKey,recentBlockhash:PublicKey.default.toBase58(),instructions:[SystemProgram.transfer({fromPubkey:signer.publicKey,toPubkey:other.publicKey,lamports:1})]}).compileToV0Message());
+const tx=()=>routeFixture(wallet,other.publicKey.toBase58(),'1000000000').tx;
 test('decimal entry preserves all u64 digits and rejects rounding, exponents and excess precision',()=>{
   assert.equal(parseUnits('18446744073.709551615',9),'18446744073709551615');
   assert.equal(parseUnits('0.000001',6),'1');assert.equal(formatUnits('1000001',6),'1.000001');

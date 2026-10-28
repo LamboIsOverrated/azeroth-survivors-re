@@ -31,8 +31,8 @@ export function mountMarket(root) {
     field('review').hidden=state.phase!=='review';
     if(state.quote && config) {
       const quote=state.quote,buy=quote.direction==='sol-to-token';
-      field('summary').textContent=`Sell ${formatUnits(quote.inAmount,buy?9:config.tokenDecimals)} ${buy?'SOL':config.tokenSymbol} · Estimated receive ${formatUnits(quote.outAmount,buy?config.tokenDecimals:9)} ${buy?config.tokenSymbol:'SOL'}.`;
-      field('fees').textContent=`Route: ${quote.router || 'Jupiter'}. ${quote.feeBps===null || quote.feeBps===undefined?'Swap fee shown by your wallet.':`Quoted swap fee: ${quote.feeBps} basis points.`} Network fees and token account rent may also apply.`;
+      field('summary').textContent=`Sell ${formatUnits(quote.inAmount,buy?9:config.tokenDecimals)} ${buy?'SOL':config.tokenSymbol} · Estimated receive ${formatUnits(quote.outAmount,buy?config.tokenDecimals:9)} ${buy?config.tokenSymbol:'SOL'}. Minimum receive: ${formatUnits(quote.minimumOut,buy?config.tokenDecimals:9)} ${buy?config.tokenSymbol:'SOL'}.`;
+      field('fees').textContent=`Route: verified Jupiter / Raydium. Quoted network fee: ${formatUnits(quote.networkFeeLamports,9)} SOL. Zero platform fee; token account rent may also apply.`;
       field('expiry').textContent=`Quote expires at ${new Date(quote.expiresAt).toLocaleTimeString()}.`;
     }
     const pending=state.phase==='pending';

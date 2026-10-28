@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { validateRoute } from './validate-route.mjs';
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
@@ -43,6 +44,7 @@ function settings(env) {
   const mint=primary || fallback;
   const symbol=env.ECONOMY_TOKEN_SYMBOL || env.GAME_TOKEN_SYMBOL || 'TOKEN';
   const expected=env.ECONOMY_TOKEN_DECIMALS ?? env.GAME_TOKEN_DECIMALS;
+  const slippage=env.MARKET_MAX_SLIPPAGE_BPS ?? '100';
   let reason=null;
   if(!mint) reason='Exchange opens after the launch token contract is configured.';
   else if(!address(mint) || mint===SOL_MINT || (primary && fallback && primary!==fallback)) reason='Launch token configuration is invalid or conflicting.';
@@ -50,9 +52,10 @@ function settings(env) {
   else if(env.SOLANA_CLUSTER && env.SOLANA_CLUSTER!=='mainnet-beta') reason='The exchange requires Solana mainnet.';
   else if(expected!==undefined && (!/^\d{1,3}$/.test(expected) || Number(expected)>255)) reason='Token decimals configuration is invalid.';
   else if(env.ECONOMY_TOKEN_DECIMALS!==undefined && env.GAME_TOKEN_DECIMALS!==undefined && env.ECONOMY_TOKEN_DECIMALS!==env.GAME_TOKEN_DECIMALS) reason='Token decimals configuration is conflicting.';
+  else if(!/^\d{1,3}$/.test(slippage) || Number(slippage)>100) reason='Market slippage limit must be between 0 and 100 basis points.';
   const endpoint=env.ECONOMY_SOLANA_RPC_URL || env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
   let rpc;try {rpc=new URL(endpoint);if(rpc.protocol!=='https:' || rpc.username || rpc.password || rpc.hash) throw new Error();} catch {reason='A trusted HTTPS Solana RPC endpoint is required.';}
-  return {origin:origin.origin,mint:address(mint)?mint:null,symbol:/^[A-Za-z0-9]{1,12}$/.test(symbol)?symbol:'TOKEN',expected:expected===undefined?null:Number(expected),rpc:rpc?.href,reason};
+  return {origin:origin.origin,mint:address(mint)?mint:null,symbol:/^[A-Za-z0-9]{1,12}$/.test(symbol)?symbol:'TOKEN',expected:expected===undefined?null:Number(expected),maxSlippageBps:Number(slippage),rpc:rpc?.href,reason};
 }
 
 /** Noncustodial wallet market. Identity and wallet binding are always resolved by the realm. */
@@ -91,7 +94,7 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
     if(!rates.has(id)) {if(rates.size>=10000) throw fail(429,'The market is busy.');rates.set(id,{count:0,until:now()+60000});}
     if(++rates.get(id).count>40) throw fail(429,'Too many market requests. Wait a minute.');
     // Retain pending results for a day; expired issued orders remain briefly to explain expiry.
-    for(const [key,value] of orders) if(value.createdAt+86400000<=now()) orders.delete(key);
+    for(const [key,value] of orders) if(value.submitted?value.createdAt+86400000<=now():value.expiresAt+60000<=now()) orders.delete(key);
   }
   const binding=(order,message=order.message)=>hash(JSON.stringify([order.account,order.session,order.wallet,order.inputMint,order.outputMint,order.amount,order.expiresAt,hash(message)]));
   const pending=order=>({status:'Pending',orderId:order.id,signature:order.signature,explorerUrl:`https://solscan.io/tx/${order.signature}`,message:'Confirmation is pending. Check this transaction before starting another swap.'});
@@ -100,7 +103,7 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
     if(!order.inFlight) {
       try {
         const result=(await rpc('getSignatureStatuses',[[order.signature],{searchTransactionHistory:true}])).value?.[0];
-        if(result && ['confirmed','finalized'].includes(result.confirmationStatus)) order.result={status:result.err?'Failed':'Success',signature:order.signature,orderId:order.id,explorerUrl:`https://solscan.io/tx/${order.signature}`,...(result.err?{message:'The transaction failed on chain.'}:{})};
+        if(result && Object.hasOwn(result,'err') && (result.err===null || typeof result.err==='object') && ['confirmed','finalized'].includes(result.confirmationStatus)) order.result={status:result.err?'Failed':'Success',signature:order.signature,orderId:order.id,explorerUrl:`https://solscan.io/tx/${order.signature}`,...(result.err?{message:'The transaction failed on chain.'}:{})};
       } catch { /* A read failure cannot establish whether submission landed. */ }
     }
     return order.result || pending(order);
@@ -144,13 +147,13 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
           if(!Number.isSafeInteger(height) || height<0) throw fail(503,'Cannot verify quote validity.');
           if(height>order.lastValidBlockHeight) throw fail(410,'The transaction blockhash expired. Request a new quote.');
         }
+        try {await validateRoute({tx,wallet,inputMint:order.inputMint,outputMint:order.outputMint,amount:order.amount,quotedOutAmount:order.quotedOutAmount,maxSlippageBps:config.maxSlippageBps,rpc});} catch {throw fail(503,'The reviewed route could not be safely revalidated. No transaction was submitted.');}
         // Reserve synchronously after every validation await, before sending any bytes upstream.
         if(order.submitted) return send(res,202,pending(order));
         if(order.expiresAt<=now()) throw fail(410,'The quote expired. Request a new quote.');
         order.submitted=true;order.inFlight=true;order.signature=base58(tx.signatures[0]);
         try {
-          const result=await upstream(`${JUPITER}/execute`,{method:'POST',headers,body:JSON.stringify({requestId:order.requestId,signedTransaction:input.signedTransaction,...(order.lastValidBlockHeight===null?{}:{lastValidBlockHeight:order.lastValidBlockHeight})})});
-          if(result.status==='Success' && result.code===0 && (!result.signature || result.signature===order.signature)) order.result={status:'Success',signature:order.signature,orderId:order.id,explorerUrl:`https://solscan.io/tx/${order.signature}`};
+          await upstream(`${JUPITER}/execute`,{method:'POST',headers,body:JSON.stringify({requestId:order.requestId,signedTransaction:input.signedTransaction,...(order.lastValidBlockHeight===null?{}:{lastValidBlockHeight:order.lastValidBlockHeight})})});
           // Errors, including upstream timeouts labelled Failed, require chain reconciliation.
         } catch { /* An ambiguous transport result must never be retried as a new execution. */ }
         finally {order.inFlight=false;}
@@ -158,15 +161,18 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
       }
       const state=await validated();if(!state.enabled) throw fail(503,state.reason);
       if(!wallet) throw fail(409,'Link and verify a wallet before requesting a quote.');
-      if(orders.size>=1000 || [...orders.values()].filter(order=>order.account===account && order.expiresAt>now() && !order.submitted).length>=10) throw fail(429,'Too many open market orders. Wait for existing quotes to expire.');
+      const active=[...orders.values()].filter(order=>!order.result && (order.submitted || order.expiresAt>now()));
+      if(orders.size>=10000 || active.length>=1000 || active.filter(order=>order.account===account).length>=10) throw fail(429,'Too many open market orders. Wait for existing quotes to expire.');
       const inputMint=input.direction==='sol-to-token'?SOL_MINT:config.mint,outputMint=input.direction==='sol-to-token'?config.mint:SOL_MINT;
       const params=new URLSearchParams({inputMint,outputMint,amount:input.amount,taker:wallet,maxSupportedTransactionVersion:'0'});
-      let result,tx;try {
+      let result,tx,safety;try {
         result=await upstream(`${JUPITER}/order?${params}`,{headers});
         if(typeof result.requestId!=='string' || !result.requestId || result.requestId.length>200 || !atoms(result.outAmount) || result.inputMint!==inputMint || result.outputMint!==outputMint || result.inAmount!==input.amount) throw new Error();
         tx=transaction(result.transaction);
         if(tx.message.staticAccountKeys[0]?.toBase58()!==wallet) throw new Error();
-      } catch {throw fail(502,'No executable quote is available. Liquidity, wallet funds or the route may be unavailable.');}
+        if(result.router!=='metis') throw new Error();
+        safety=await validateRoute({tx,wallet,inputMint,outputMint,amount:input.amount,quotedOutAmount:result.outAmount,maxSlippageBps:config.maxSlippageBps,rpc});
+      } catch {throw fail(502,'No supported, verified executable quote is available. Liquidity, wallet funds or the route format may be unavailable.');}
       let expiresAt=now()+60000;
       if(result.expireAt!==undefined && result.expireAt!==null) {
         const raw=result.expireAt;
@@ -177,9 +183,9 @@ export function createMarket({identity,resolveWallet,env=process.env,fetchImpl=g
       const rawHeight=result.lastValidBlockHeight;
       const lastValidBlockHeight=rawHeight===undefined || rawHeight===null?null:typeof rawHeight==='string' && /^\d{1,16}$/.test(rawHeight)?Number(rawHeight):rawHeight;
       if(lastValidBlockHeight!==null && (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight<0)) throw fail(502,'Invalid transaction expiry.');
-      const order={id:randomUUID(),requestId:result.requestId,account,session,wallet,inputMint,outputMint,amount:input.amount,createdAt:now(),expiresAt,lastValidBlockHeight,message:Buffer.from(tx.message.serialize()),submitted:false};
+      const order={id:randomUUID(),requestId:result.requestId,account,session,wallet,inputMint,outputMint,amount:input.amount,quotedOutAmount:result.outAmount,minimumOut:safety.minimumOut,createdAt:now(),expiresAt,lastValidBlockHeight,message:Buffer.from(tx.message.serialize()),submitted:false};
       order.digest=binding(order);orders.set(order.id,order);
-      return send(res,200,{orderId:order.id,inputMint,outputMint,inAmount:input.amount,outAmount:result.outAmount,transaction:result.transaction,expiresAt,tokenDecimals:state.tokenDecimals,tokenSymbol:config.symbol,router:typeof result.router==='string'?result.router.slice(0,24):'Jupiter',feeBps:Number.isFinite(result.feeBps)?result.feeBps:null,feeMint:address(result.feeMint)?result.feeMint:null,priceImpactPct:typeof result.priceImpactPct==='string'?result.priceImpactPct.slice(0,32):null,messageHash:hash(order.message)});
+      return send(res,200,{orderId:order.id,inputMint,outputMint,inAmount:input.amount,outAmount:result.outAmount,minimumOut:safety.minimumOut,networkFeeLamports:safety.networkFeeLamports,transaction:result.transaction,expiresAt,tokenDecimals:state.tokenDecimals,tokenSymbol:config.symbol,router:'metis',feeBps:0,feeMint:null,priceImpactPct:typeof result.priceImpactPct==='string'?result.priceImpactPct.slice(0,32):null,messageHash:hash(order.message)});
     } catch(error) {return send(res,error.status || 500,{error:error.status?error.message:'The market could not complete this request.'});}
   };
 }
