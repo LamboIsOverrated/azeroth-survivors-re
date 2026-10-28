@@ -21,6 +21,18 @@ inline double FallElevation(double seconds, bool slowFall)
            + terminal * (seconds - terminalTime);
 }
 
+inline bool TransportCoordinatesValid(double x, double y, double z,
+                                     double worldDx, double worldDy, double worldDz)
+{
+    // Match the pinned transport offset bounds symmetrically, including negatives.
+    // The bounded world delta allows receipt latency; accepted positions are then
+    // rebased to the server transform, never to the submitted world coordinates.
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+        std::isfinite(worldDx) && std::isfinite(worldDy) && std::isfinite(worldDz) &&
+        std::abs(x) <= 50 && std::abs(y) <= 50 && std::abs(z) <= 100 &&
+        worldDx * worldDx + worldDy * worldDy + worldDz * worldDz <= 100.0;
+}
+
 class MovementBudget
 {
     bool initialized = false;

@@ -43,4 +43,9 @@ int main()
     assert(std::abs(RealmBrowser::FallElevation(10, false) -
                     RealmBrowser::FallElevation(9, false) - 60.148003) < .00001);
     assert(RealmBrowser::FallElevation(.4, true) < 0); // jumping still rises first
+    assert(RealmBrowser::TransportCoordinatesValid(2, -2, 3, 1, 0, 0));
+    assert(!RealmBrowser::TransportCoordinatesValid(-5000, 0, 0, 0, 0, 0));
+    assert(!RealmBrowser::TransportCoordinatesValid(0, 0, 0, 100, 0, 0));
+    assert(!RealmBrowser::TransportCoordinatesValid(0, 0, 0, 0, 0,
+            std::numeric_limits<double>::quiet_NaN()));
 }

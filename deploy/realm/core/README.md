@@ -189,7 +189,13 @@ only by the server's monotonic receipt clock and authoritative run/swim/walk
 speeds. Its burst allowance is two seconds of movement plus one yard; it never
 uses a submitted client timestamp. Server timer wrap is supported. Root/stun state
 comes from the server's unit state. Resets/exemptions come from server teleport,
-taxi, knockback, actual transport and spline state, never incoming movement flags.
+taxi, knockback and spline state, never incoming movement flags. Transport
+membership grants no blanket exemption: the transport must exist in the current
+map, match any active passenger membership, and produce the claimed world pose
+within ten yards. Offsets have symmetric bounds; accepted world coordinates are
+rebased to the server transform. Boarding requires proximity and a physical
+surface. Passenger motion consumes the same budget in local coordinates, and
+airborne checks use local Z so moving lifts do not create artificial flight.
 It rejects unpermitted flight/movement flags, map collision crossings and positions
 below the server's map surface. An airborne ceiling uses the actual core fall
 function for normal falls and its pinned constants with a corrected seven-yard

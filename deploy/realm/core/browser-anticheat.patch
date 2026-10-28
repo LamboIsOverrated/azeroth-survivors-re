@@ -84,7 +84,15 @@
  void SessionAnticheat::AutoReply(const std::string &msg)
 --- a/src/game/Anticheat/module/Movement/movement.cpp
 +++ b/src/game/Anticheat/module/Movement/movement.cpp
-@@ -915,14 +915,6 @@
+@@ -17,6 +17,7 @@
+ #include "Entities/Unit.h"
+ #include "Entities/Player.h"
+ #include "Entities/GameObject.h"
++#include "Entities/Transports.h"
+ #include "Server/WorldSession.h"
+ #include "Server/DBCStructure.h"
+ #include "World/World.h"
+@@ -915,14 +916,6 @@
  
  bool Movement::IsTeleportAllowed(MovementInfo const& movementInfo, float& distance)
  {
@@ -99,13 +107,13 @@
      // if knockbacked
      if (_me->IsLaunched())
          return true;
-@@ -972,6 +964,69 @@
+@@ -972,6 +965,101 @@
      }
  
      return movementInfo.fallTime != 0 || movementInfo.jump.zspeed != 0.0f;
 +}
 +
-+bool Movement::CheckBrowserMovement(MovementInfo const& mi)
++bool Movement::CheckBrowserMovement(MovementInfo& mi)
 +{
 +    if (_me->GetSession()->GetSecurity() != SEC_PLAYER || !_me->IsSelfMover())
 +        return true;
@@ -120,18 +128,48 @@
 +
 +    // These are server-owned states, never exemptions based on the incoming flags.
 +    const bool exempt = _justTeleported || _me->IsBeingTeleported() || _me->IsTaxiFlying() ||
-+        _me->IsLaunched() || _me->GetTransport() || !_me->movespline->Finalized();
++        _me->IsLaunched() || !_me->movespline->Finalized();
 +    const uint32 now = WorldTimer::getMSTime();
 +    const double speed = _me->hasUnitState(UNIT_STAT_STUNNED | UNIT_STAT_ROOT) ? 0.0 : std::max<double>(
 +        _me->GetSpeed(MOVE_RUN), std::max(_me->GetSpeed(MOVE_SWIM), _me->GetSpeed(MOVE_WALK)));
-+    const double distance = std::hypot(double(mi.pos.x) - _me->GetPositionX(),
-+                                       double(mi.pos.y) - _me->GetPositionY());
++    double distance = std::hypot(double(mi.pos.x) - _me->GetPositionX(),
++                                 double(mi.pos.y) - _me->GetPositionY());
++    double airZ = mi.pos.z, previousAirZ = _me->GetPositionZ();
++    GenericTransport* activeTransport = _me->GetTransport();
++    GenericTransport* requestedTransport = nullptr;
++    if (mi.HasMovementFlag(MOVEFLAG_ONTRANSPORT))
++    {
++        requestedTransport = _me->GetMap()->GetTransport(mi.GetTransportGuid());
++        if (!requestedTransport || (activeTransport && activeTransport != requestedTransport))
++            return reject("unknown-or-switched-transport");
++        if (activeTransport && !activeTransport->GetPassengers().count(_me))
++            return reject("unowned-transport-membership");
++        float x = mi.GetTransportPos().x, y = mi.GetTransportPos().y, z = mi.GetTransportPos().z;
++        requestedTransport->CalculatePassengerPosition(x, y, z);
++        if (!RealmBrowser::TransportCoordinatesValid(mi.GetTransportPos().x, mi.GetTransportPos().y,
++                mi.GetTransportPos().z, double(x) - mi.pos.x, double(y) - mi.pos.y, double(z) - mi.pos.z))
++            return reject("invalid-transport-transform");
++        if (!activeTransport && !requestedTransport->IsWithinDist(_me, 70.f, true))
++            return reject("remote-transport-boarding");
++        if (activeTransport)
++            distance = std::hypot(double(mi.GetTransportPos().x) - _me->GetTransOffsetX(),
++                                   double(mi.GetTransportPos().y) - _me->GetTransOffsetY());
++        else
++            distance = std::hypot(double(x) - _me->GetPositionX(), double(y) - _me->GetPositionY());
++        float oldX = _me->GetPositionX(), oldY = _me->GetPositionY(), oldZ = _me->GetPositionZ();
++        requestedTransport->CalculatePassengerOffset(oldX, oldY, oldZ);
++        airZ = mi.GetTransportPos().z;
++        previousAirZ = activeTransport ? _me->GetTransOffsetZ() : oldZ;
++        // The validated local pose is authoritative; never relocate to arbitrary
++        // client world coordinates just because a transport GUID was submitted.
++        mi.pos.x = x; mi.pos.y = y; mi.pos.z = z;
++    }
 +    if (!exempt && (mi.moveFlags & (MOVEFLAG_FLYING | MOVEFLAG_CAN_FLY | MOVEFLAG_LEVITATING)))
 +        return reject("unauthorized-flight-flags");
 +    if (!_browserBudget.Accept(now, distance, speed, exempt))
 +        return reject("server-time-distance-budget");
 +    if (exempt)
-+        return _browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), false, true,
++        return _browserAir.Accept(now, airZ, previousAirZ, false, true,
 +                                  [](double) { return 0.0; });
 +
 +    uint32 removeFlags = 0;
@@ -152,14 +190,16 @@
 +                                  std::fabs(mi.pos.z - floor) <= 1.5f);
 +    if (!water && std::isfinite(floor) && floor > -50000.f && mi.pos.z < floor - 2.f)
 +        return reject("below-map-surface");
++    if (requestedTransport && !activeTransport && !surface)
++        return reject("transport-boarding-not-on-surface");
 +    const bool slowFall = _me->HasAuraType(SPELL_AURA_FEATHER_FALL);
 +    if (slowFall != _browserSlowFall)
 +    {
 +        _browserSlowFall = slowFall;
-+        _browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), false, true,
++        _browserAir.Accept(now, airZ, previousAirZ, false, true,
 +                           [](double) { return 0.0; });
 +    }
-+    if (!_browserAir.Accept(now, mi.pos.z, _me->GetPositionZ(), surface, false,
++    if (!_browserAir.Accept(now, airZ, previousAirZ, surface, false,
 +            [slowFall](double seconds) {
 +                return slowFall ? RealmBrowser::FallElevation(seconds, true) :
 +                    ::Movement::computeFallElevation(float(seconds), false, -7.955547f);
@@ -193,7 +233,7 @@
          void OnExplore(AreaTableEntry const* p);
          void OnTransport(Player* plMover, ObjectGuid transportGuid);
  
-+        bool CheckBrowserMovement(MovementInfo const& movementInfo);
++        bool CheckBrowserMovement(MovementInfo& movementInfo);
          bool CheckTeleport(uint16 opcode, MovementInfo& movementInfo);
  
          // commands

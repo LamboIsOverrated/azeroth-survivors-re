@@ -115,3 +115,11 @@ slow-fall terminal. Pinned `GridMap.cpp::TerrainInfo::IsInWater` treats any nonz
 liquid status as water, including `LIQUID_MAP_ABOVE_WATER`; the carry instead
 requires explicit in/under-water bits. These corrections are checked as source
 mechanisms and modeled physics, with actual browser/world acceptance still pending.
+
+Pinned `MovementHandler.cpp::HandleMoverRelocation` can attach a submitted
+transport GUID without a proximity check. The carry therefore validates the
+current-map transport, passenger ownership, symmetric offset bounds and local to
+world transform before using it. Boarding charges distance to the server-rebased
+position, and subsequent passenger movement charges relative distance; transport
+membership is never a global budget/physics exemption. Actual ship/lift boarding,
+latency and jump acceptance remain explicit isolated-world gates.

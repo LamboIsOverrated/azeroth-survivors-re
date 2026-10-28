@@ -7,13 +7,13 @@
     },
     "src/game/Anticheat/module/Movement/movement.cpp": {
       "before": "6ddeb246648d3c003275647440fb02e7b8d010fe4320873852062908c0a96014",
-      "after": "358cc1fba77b6040e1a3a6a7735a751e4888e570970f4d833e9fba241579e074"
+      "after": "00cff072cf7cb16d9497addcce2d3f041305f18e8b15f4862a34cdbfd1de7953"
     },
     "src/game/Anticheat/module/Movement/movement.hpp": {
       "before": "02863c6c69e7341296041a63bf845233de61daecc231b5eb1f27e1e5cd300617",
-      "after": "f1e5addb5c14789fd3274b435a5159bd4bee227adaf19060b487f01127428b4f"
+      "after": "58488d1bd8e8b803635310a98566af40773001fc5f71975a6e2dafda05aee9b7"
     }
   },
-  "patch_sha256": "cd9b8dfd938c0b4216c8fd3f3330330fd46913155bfb7675902246c05e219540",
-  "header_sha256": "52b4d5f1a4be15fb74e55f5caa3b52dc9a26ae11d513e94bf4a607825ef5cb16"
+  "patch_sha256": "1152a54c53f10b2dec154307f0eb4b9ba96e2035468a99c52b8b0d2f6e693cd6",
+  "header_sha256": "17e0bb8c4e7e6cf4b2e6012d68eb9d84fdd348f95873e6052c357cdfd1eb4b5d"
 }
