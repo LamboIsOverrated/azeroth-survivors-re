@@ -216,7 +216,7 @@ midair test after landing. Restore the speed through the normal operator UI even
 if a test fails, and keep both ordinary avatars at security zero. These gates
 wait for external attended actions; the probe sends no privileged command.
 For a separately attended knockback phase, `await_knockback` names an expected
-`launch: [down-positive Z speed, cos, sin, XY speed]` and a 1,000–30,000 ms timeout.
+`launch: [down-positive Z speed, cos, sin, XY speed]` and a 1,000–120,000 ms timeout.
 `operator-knockback-ready` is the only action prompt. The operator must first
 verify the actual runtime spell template has only the non-damaging knockback
 effect and no damage/aura/trigger effects. The intended single attended cast is
@@ -224,6 +224,11 @@ effect and no damage/aura/trigger effects. The intended single attended cast is
 The received encrypted `KnockBack` packet must match the ordinary avatar, finite
 direction and bounded expected launch. The probe records and ACKs its real
 counter/quad; it sends no cast, privileged command or combat action.
+Only this prelaunch attended wait can exceed 30 seconds. Its excess reserves at
+most 90 extra seconds in the whole-process watchdog and schedule, making their
+maximum deadline 270 seconds. Flight and expiry clocks still start exclusively
+from the actual received launch, with the same bounds. Speed and teleport action
+windows, health/combat, packet, terrain and movement checks are unchanged.
 
 `relative_to_knockback` uses the last accepted primary pose. With
 `ballistic_from_knockback`, the offset must be zero, flags must be falling, and

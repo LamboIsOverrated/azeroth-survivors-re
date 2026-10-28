@@ -182,6 +182,15 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
         .sum::<f32>()
         .sqrt()
 }
+fn operator_wait_grace_ms(f: &Fixture) -> u64 {
+    // One validated knockback gate may reserve additional attended arrival time.
+    // This adds no time to the post-receipt flight, expiry or packet guards.
+    f.steps
+        .iter()
+        .filter_map(|s| s.await_knockback.as_ref())
+        .map(|gate| gate.timeout_ms.saturating_sub(30000))
+        .sum()
+}
 fn validate(f: &Fixture) -> Result<()> {
     ensure!(f.version == 1 && f.isolated, "require isolated fixture v1");
     ensure!(
@@ -274,7 +283,7 @@ fn validate(f: &Fixture) -> Result<()> {
             ensure!(
                 !has_knockback
                     && !has_teleport
-                    && (1000..=30000).contains(&gate.timeout_ms)
+                    && (1000..=120000).contains(&gate.timeout_ms)
                     && phases::launch_matches(gate.launch, gate.launch),
                 "invalid bounded knockback gate"
             );
@@ -420,7 +429,7 @@ fn validate(f: &Fixture) -> Result<()> {
                 + s.await_knockback.as_ref().map_or(0, |g| g.timeout_ms)
                 + s.wait_knockback_age_ms.unwrap_or(0))
             .sum::<u64>()
-            <= 110000,
+            <= 110000 + operator_wait_grace_ms(f),
         "step schedule exceeds deadline reserve"
     );
     let last = f.steps.last().unwrap();
@@ -1132,13 +1141,15 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
             .open(output)?,
         begin: Instant::now(),
     };
+    let deadline_ms = 180000 + operator_wait_grace_ms(f);
     evidence.write(json!({"event":"preflight","fixture_sha256":format!("{:x}",Sha256::digest(raw)),"source_commit":f.source_commit,
         "image_digest":f.image_digest,"auth":f.auth,"world":f.world,"database_prefix":f.database_prefix,"canonical_clone":f.canonical_clone,
         "primary":f.primary.user,"observer":f.observer.user,"security_attestation":[f.primary.security,f.observer.security],
-        "max_duration_seconds":180,"max_outbound_packets":128,"combat":false,"mode":format!("{mode:?}")}))?;
+        "max_duration_seconds":deadline_ms/1000,"operator_wait_grace_ms":operator_wait_grace_ms(f),
+        "max_outbound_packets":128,"combat":false,"mode":format!("{mode:?}")}))?;
     // Independent hard bound also covers a stalled OS connect/read during authentication.
-    thread::spawn(|| {
-        thread::sleep(Duration::from_secs(180));
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(deadline_ms));
         eprintln!("movement probe exceeded hard deadline");
         std::process::exit(124);
     });
@@ -1506,6 +1517,13 @@ mod tests {
             {"name":"walk-back","delay_ms":100,"opcode":183,"flags":0,"offset":[0,0,0],"accept":true,"terrain_follow":true}
         ])).unwrap();
         validate(&f).unwrap();
+        f.steps[1].await_knockback.as_mut().unwrap().timeout_ms = 120000;
+        validate(&f).unwrap();
+        assert_eq!(operator_wait_grace_ms(&f), 90000);
+        f.steps[1].await_knockback.as_mut().unwrap().timeout_ms = 120001;
+        assert!(validate(&f).is_err());
+        f.steps[1].await_knockback.as_mut().unwrap().timeout_ms = 10000;
+        assert_eq!(operator_wait_grace_ms(&f), 0);
         f.steps[2].wait_knockback_age_ms = Some(100);
         assert!(validate(&f).is_err());
         f.steps[2].wait_knockback_age_ms = Some(61000);
