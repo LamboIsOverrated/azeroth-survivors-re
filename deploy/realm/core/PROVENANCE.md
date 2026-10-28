@@ -88,8 +88,9 @@ do not confirm the new image has been built or is safe to activate.
 ## Disabled browser movement carry
 
 `anticheat-sources.json` pins the exact before/after hashes of the original core's
-`libanticheat.cpp`, `Movement/movement.cpp` and `Movement/movement.hpp` at the core
-revision above. `browser-anticheat.patch` is the reviewable source carry and
+`libanticheat.cpp`, `Movement/movement.cpp`, `Movement/movement.hpp`, the shared
+`Anticheat.hpp` interface, `module/libanticheat.hpp`, and the native movement
+handler at the core revision above. `browser-anticheat.patch` is the reviewable source carry and
 `BrowserMovementBudget.h` is original server-clock budget/airborne-ceiling code.
 The apply tool verifies both source and carry content and accepts the separate
 bridge's earlier modifications only because they touch disjoint files.
@@ -134,6 +135,31 @@ air origins without resetting their time. Source tests compile the actual reset,
 teleport, expiry and speed-ack methods, while standalone models cover withheld
 landing, timer wrap, trajectory forgery and world/local air-frame changes. Full
 image and isolated actual-world acceptance remain separate prerequisites.
+
+The native knockback follow-up registers the exact server order before its
+counter increments and supplies the previously missing opcode/ACK response map.
+The default interface hook retains Null/stock policy behavior. Enabled ordinary
+self-controlled sessions stage only a matching finite counter/launch quad;
+absent, replayed, superseded, expired and malformed receipts stop before movement
+processing. Teleport and world re-entry discard pending receipts.
+
+While the receipt is pending, the unchanged ordinary budget/air state and shared
+LOS/floor/transport path validate the ACK's application origin. Successful
+geometry/policy acceptance consumes the receipt once before player relocation.
+It debits that ordinary displacement and anchors the exact server trajectory to
+the accepted origin. Trajectory application time and original server issue time
+are separate: delayed ACKs do not strand legal flight, and cannot extend the
+absolute 60-second server authority. No client clock grants time or distance.
+
+`check_knockback_contract.py` compiles the actual native Send/ACK, module gate,
+receipt staging and complete shared browser validator against narrow map/engine
+boundaries. Native regressions exercise the first counter zero, negative receipt
+and geometry cases followed by a fresh valid ACK, a 3.493-yard moving-victim
+origin, and a three-second delayed ACK followed by legal flight. They are not
+real map or network acceptance; a new full image and isolated moving-victim
+drill remain required. Inherited `OverspeedZ` diagnostics still use the older
+idle-JUMPING distance heuristic; their informational false positives are retained
+and documented rather than granting a flag-derived exemption or enabling bans.
 # Complete generated-data attestation
 
 `extraction-profile.json` contains metadata only. Its Linux amd64 extractor

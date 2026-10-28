@@ -4,6 +4,24 @@
 
 int main()
 {
+    RealmBrowser::KnockbackReceipt receipt;
+    assert(!receipt.Consume(1000, 0, 8192, -1, 0, 10, -10)); // No server-issued launch.
+    assert(receipt.Issue(1000, 0, -1, 0, 10, -10));
+    assert(!receipt.Consume(1100, 1, 8192, -1, 0, 10, -10));
+    assert(!receipt.Consume(1100, 0, 0, -1, 0, 10, -10));
+    assert(!receipt.Consume(1100, 0, 8192, 1, 0, 10, -10));
+    assert(!receipt.Consume(1100, 0, 8192, -1, 0, 10, std::numeric_limits<double>::quiet_NaN()));
+    assert(receipt.Consume(1100, 0, 8192, -1, 0, 10, -10)); // Native first counter is zero.
+    assert(!receipt.Consume(1101, 0, 8192, -1, 0, 10, -10)); // One consume, no replay.
+    assert(receipt.Issue(2000, 1, -1, 0, 10, -10));
+    assert(receipt.Issue(2001, 2, 1, 0, 5, -5));
+    assert(!receipt.Consume(2002, 1, 8192, -1, 0, 10, -10)); // Superseded receipt.
+    assert(receipt.Consume(2002, 2, 8192, 1, 0, 5, -5));
+    assert(receipt.Issue(3000, 3, -1, 0, 10, -10));
+    assert(!receipt.Consume(63001, 3, 8192, -1, 0, 10, -10)); // Same 60s server limit.
+    assert(receipt.Issue(0xfffffff0u, 0, -1, 0, 10, -10));
+    assert(receipt.Consume(84, 0, 8192, -1, 0, 10, -10)); // Server clock wraps.
+    assert(!receipt.Issue(1000, 0, 0, 0, 10, -10));
     RealmBrowser::MovementBudget normal;
     assert(normal.Accept(1000, 0, 7));
     for (unsigned t = 1100; t < 120000; t += 100)
@@ -77,4 +95,9 @@ int main()
     RealmBrowser::KnockbackEnvelope coherent;
     assert(coherent.Start(1000, {0, 0, 10}, 10, -12, 1, 0));
     assert(!coherent.Check(4000, {30, 0, 10}, true, false)); // XY and Z must describe the same flight time
+    RealmBrowser::KnockbackEnvelope late;
+    assert(late.Start(1000, {0, 0, 10}, 10, -10, 0, 1));
+    assert(late.RebaseAtReceipt(4000, {3.493, 0, 10}));
+    assert(late.Check(4150, {3.493, 1.5, 11.282}, false, false));
+    assert(late.Expired(61001)); // ACK rebase cannot renew original issue authority.
 }

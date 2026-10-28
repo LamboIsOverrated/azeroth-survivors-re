@@ -171,7 +171,7 @@ docker build -f deploy/realm/core/Dockerfile.bridge -t realm-core-bridge:test .
 
 The same future image applies `browser-anticheat.patch` after the disjoint bridge
 carry. `apply_anticheat.py` requires the exact core revision and hashes of all
-three affected source files, verifies patch/header hashes, checks applicability,
+six affected source files, verifies patch/header hashes, checks applicability,
 and verifies the resulting source hashes. It never touches SQL or a service.
 The complete patched source, carry, header, apply tool and build checks accompany
 the future binary image. The ordinary pinned companion image has capability `0`.
@@ -220,6 +220,22 @@ withheld opcodes cannot preserve an exemption. The world update expires any
 remaining envelope after sixty seconds and reanchors at the existing server pose.
 Actual knockback timing, wall/ceiling impacts, long falls and aura changes remain
 mandatory isolated-world tests before activation.
+
+Knockback ACKs for enabled ordinary sessions require an actual outstanding server
+counter and finite matching launch quad. Registration precedes counter increment;
+the first native counter may be zero. The ACK stages a candidate, then the shared
+ordinary budget/air/LOS/floor path validates its origin before relocation. Only
+full acceptance consumes it and starts the exact server trajectory at that
+validated origin. Trajectory time starts at ACK application; absolute authority
+still expires sixty seconds after the original server issue. Replayed, superseded,
+wrong or expired receipts cannot reanchor it. A geometry refusal leaves the
+receipt available for a fresh valid ACK. Null/disabled policy retains stock ACK
+behavior; teleport and world re-entry discard pending receipts.
+
+The exact-source native helper exercises moving-victim origins and delayed ACKs,
+but this follow-up needs a fresh full image and actual moving-victim world drill.
+Legacy informational `OverspeedZ` false positives remain documented; their
+idle-JUMPING heuristic does not justify an exemption or punitive response.
 
 Enablement generates `Enable=1`, `Warden.Enable=0`, speed diagnostics and log-only
 heuristic response masks. No generated heuristic action bans, silences or kicks.

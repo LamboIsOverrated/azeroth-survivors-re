@@ -59,7 +59,7 @@
 +        return false;
 +
 +    // Commit browser budgets/frames only after every other validator accepts.
-+    if (!_movementData->CheckBrowserMovement(mi))
++    if (!_movementData->CheckBrowserMovement(mi, packet.GetOpcode()))
 +        return false;
  
      // if the above checks do not object to the message, update some other status...
@@ -73,7 +73,26 @@
  }
  
  void SessionAnticheat::TimeSkipped(const ObjectGuid &mover, uint32 ms)
-@@ -1011,7 +1022,10 @@
+@@ -985,6 +996,18 @@
+         _movementData->KnockBack(speedxy, speedz, cos, sin);
+ }
+ 
++bool SessionAnticheat::KnockBackAck(uint32 counter, MovementInfo const& mi)
++{
++    if (_session->GetSecurity() != SEC_PLAYER)
++        return true;
++    auto const player = _session->GetPlayer();
++    if (!player)
++        return false;
++    if (!player->IsSelfMover())
++        return true;
++    return _inWorld && _movementData && _movementData->KnockBackAck(counter, mi);
++}
++
+ void SessionAnticheat::OnExplore(const AreaTableEntry *p)
+ {
+     if (_movementData)
+@@ -1011,7 +1034,10 @@
  
  void SessionAnticheat::WardenPacket(WorldPacket &packet)
  {
@@ -95,11 +114,19 @@
  #include "Server/WorldSession.h"
  #include "Server/DBCStructure.h"
  #include "World/World.h"
-@@ -117,7 +118,16 @@
+@@ -30,6 +31,8 @@
+ {
+     switch (opcode)
+     {
++        case SMSG_MOVE_KNOCK_BACK:
++            return CMSG_MOVE_KNOCK_BACK_ACK;
+         case SMSG_FORCE_WALK_SPEED_CHANGE:
+             return CMSG_FORCE_WALK_SPEED_CHANGE_ACK;
+         case SMSG_FORCE_RUN_SPEED_CHANGE:
+@@ -117,6 +120,26 @@
      GetLastMovementInfo().moveFlags = MOVEFLAG_JUMPING | (GetLastMovementInfo().moveFlags & ~MOVEFLAG_MASK_MOVING_OR_TURN);
      _jumpInitialSpeed = speedz;
      _inKnockBack = true;
--}
 +    const uint32 now = WorldTimer::getMSTime();
 +    if (!_browserKnockback.Start(now, {_me->GetPositionX(), _me->GetPositionY(), _me->GetPositionZ()},
 +                                speedxy, speedz, cos, sin))
@@ -107,13 +134,32 @@
 +        _inKnockBack = false;
 +        _me->SetLaunched(false);
 +    }
-+    _browserBudget.Reset(now, std::max<double>(_me->GetSpeed(MOVE_RUN), speedxy));
++    // Preserve the ordinary budget/air until the first ACK origin is validated.
++    _browserKnockbackAckStaged = false;
++    _browserKnockbackReceipt.Issue(now, _browserKnockbackCounter, cos, sin, speedxy, speedz);
 +}
 +
++
++bool Movement::KnockBackAck(uint32 counter, MovementInfo const& mi)
++{
++    const uint32 now = WorldTimer::getMSTime();
++    _browserKnockbackAckStaged = _browserKnockback.Active() && !_browserKnockback.Expired(now) &&
++        _browserKnockbackReceipt.Matches(now, counter, mi.moveFlags,
++            mi.jump.cosAngle, mi.jump.sinAngle, mi.jump.xyspeed, mi.jump.zspeed);
++    return _browserKnockbackAckStaged;
+ }
  
  void Movement::VerifyMovementFlags(uint32 flags, uint32 &removeFlags, bool strict) const
+@@ -232,6 +255,8 @@
+ 
+ void Movement::OrderSent(uint16 opcode, uint32 counter)
  {
-@@ -660,8 +670,10 @@
++    if (opcode == SMSG_MOVE_KNOCK_BACK)
++        _browserKnockbackCounter = counter;
+     _orderHistory.push_back({ opcode, WorldTimer::getMSTime() });
+ 
+     _orders.emplace_back<PendingOrder>({ opcode, counter, WorldTimer::getMSTime() });
+@@ -660,14 +685,17 @@
          _me->SetSpeedRate(moveType, _me->GetSpeedRate(moveType), true);
      }
  
@@ -126,7 +172,14 @@
      clientSpeeds[moveType] = newSpeed;
      return true;
  }
-@@ -896,9 +908,43 @@
+ 
+ void Movement::HandleEnterWorld()
+ {
++    ResetBrowserMovement(); // No pending or applied launch crosses world re-entry.
+     _worldChangeHistory.push_back({ true, WorldTimer::getMSTime() });
+ 
+     for (int i = 0; i < MAX_MOVE_TYPE; ++i)
+@@ -896,9 +924,45 @@
          _anticheat->RecordCheatInternal(CHEAT_TYPE_EXPLORE_HIGH_LEVEL);
  }
  
@@ -134,6 +187,8 @@
 +{
 +    const uint32 now = WorldTimer::getMSTime();
 +    _browserKnockback.End();
++    _browserKnockbackReceipt.Clear();
++    _browserKnockbackAckStaged = false;
 +    _inKnockBack = false;
 +    _me->SetLaunched(false);
 +    const double speed = std::max<double>(_me->GetSpeed(MOVE_RUN),
@@ -171,7 +226,7 @@
  }
  
  void Movement::OnTransport(Player* plMover, ObjectGuid transportGuid)
-@@ -915,14 +961,6 @@
+@@ -915,14 +979,6 @@
  
  bool Movement::IsTeleportAllowed(MovementInfo const& movementInfo, float& distance)
  {
@@ -186,13 +241,13 @@
      // if knockbacked
      if (_me->IsLaunched())
          return true;
-@@ -972,6 +1010,135 @@
+@@ -972,6 +1028,148 @@
      }
  
      return movementInfo.fallTime != 0 || movementInfo.jump.zspeed != 0.0f;
 +}
 +
-+bool Movement::CheckBrowserMovement(MovementInfo& mi)
++bool Movement::CheckBrowserMovement(MovementInfo& mi, uint16 opcode)
 +{
 +    if (_me->GetSession()->GetSecurity() != SEC_PLAYER || !_me->IsSelfMover())
 +        return true;
@@ -212,7 +267,9 @@
 +    auto budget = _browserBudget;
 +    auto air = _browserAir;
 +    auto knock = _browserKnockback;
-+    const bool forced = knock.Active();
++    const bool reconcile = opcode == CMSG_MOVE_KNOCK_BACK_ACK && _browserKnockbackAckStaged;
++    _browserKnockbackAckStaged = false; // A failed ACK cannot stage the next ordinary packet.
++    const bool forced = knock.Active() && !_browserKnockbackReceipt.Pending();
 +    double distance = std::hypot(double(mi.pos.x) - _me->GetPositionX(),
 +                                 double(mi.pos.y) - _me->GetPositionY());
 +    double airZ = mi.pos.z, previousAirZ = _me->GetPositionZ();
@@ -306,6 +363,17 @@
 +                [slowFall](double seconds) { return RealmBrowser::FallElevation(seconds, slowFall); }))
 +            return reject("airborne-gravity-envelope");
 +    }
++    if (reconcile)
++    {
++        // The first ACK is ordinary movement until this entire geometry/policy
++        // path accepts it. Rebase only to that budgeted, map-verified origin.
++        // Trajectory T0 follows validated application/ACK time, while the original
++        // server issue clock still caps the absolute launch lifetime.
++        if (!knock.RebaseAtReceipt(now, {mi.pos.x, mi.pos.y, mi.pos.z}) ||
++            !_browserKnockbackReceipt.Consume(now, _browserKnockbackCounter, mi.moveFlags,
++                mi.jump.cosAngle, mi.jump.sinAngle, mi.jump.xyspeed, mi.jump.zspeed))
++            return reject("invalid-knockback-receipt-commit");
++    }
 +    _browserBudget = budget;
 +    _browserAir = air;
 +    _browserKnockback = knock;
@@ -332,7 +400,7 @@
  
  #include <vector>
  #include <map>
-@@ -39,6 +40,13 @@
+@@ -39,6 +40,16 @@
          Player * const _me;
  
          float _totalDistanceTraveled;
@@ -340,13 +408,24 @@
 +        RealmBrowser::AirborneCeiling _browserAir;
 +        bool _browserSlowFall = false;
 +        RealmBrowser::KnockbackEnvelope _browserKnockback;
++        RealmBrowser::KnockbackReceipt _browserKnockbackReceipt;
++        uint32 _browserKnockbackCounter = 0;
++        bool _browserKnockbackAckStaged = false;
 +        ObjectGuid _browserFrame;
 +        double _browserLastAirZ = 0;
 +        bool _browserHasFrame = false;
  
          // true when the previous tick of anticheat tests was aborted due to the session controlling a unit other than its own player (mind control)
          bool _wasMovingOther;
-@@ -124,6 +132,8 @@
+@@ -117,6 +128,7 @@
+ 
+         bool IsInKnockBack() const { return _inKnockBack; }
+         void KnockBack(float speedxy, float speedz, float cos, float sin);
++        bool KnockBackAck(uint32 counter, MovementInfo const& mi);
+ 
+         bool HandleAnticheatTests(MovementInfo& movementInfo, WorldSession* session, const WorldPacket& packet);
+         bool HandleSpeedChangeAck(MovementInfo& movementInfo, WorldSession* session, const WorldPacket& packet, float newSpeed);
+@@ -124,6 +136,8 @@
          void HandleLeaveWorld();
          void TimeSkipped(const ObjectGuid &mover, uint32 ms);
          void HandleTeleport(const Position &pos);
@@ -355,7 +434,7 @@
  
          // verify movement flags.  when strict is true, it will include considering pending orders.  this is optional because warden also
          // uses this function, but the results will be delayed
-@@ -138,6 +148,7 @@
+@@ -138,6 +152,7 @@
          void OnExplore(AreaTableEntry const* p);
          void OnTransport(Player* plMover, ObjectGuid transportGuid);
  
@@ -363,3 +442,58 @@
          bool CheckTeleport(uint16 opcode, MovementInfo& movementInfo);
  
          // commands
+--- a/src/game/Anticheat/Anticheat.hpp
++++ b/src/game/Anticheat/Anticheat.hpp
+@@ -91,6 +91,8 @@
+         virtual bool SpeedChangeAck(MovementInfo &mi, const WorldPacket &packet, float newSpeed) = 0;
+         virtual bool IsInKnockBack() const = 0;
+         virtual void KnockBack(float speedxy, float speedz, float cos, float sin) = 0;
++        // Null/stock policy preserves its existing ACK behavior.
++        virtual bool KnockBackAck(uint32, MovementInfo const&) { return true; }
+         virtual void OnExplore(const AreaTableEntry *p) = 0;
+         virtual void Teleport(const Position &pos) = 0;
+ 
+--- a/src/game/Anticheat/module/libanticheat.hpp
++++ b/src/game/Anticheat/module/libanticheat.hpp
+@@ -94,6 +94,7 @@
+         virtual bool SpeedChangeAck(MovementInfo &mi, const WorldPacket &packet, float newSpeed) override;
+         virtual bool IsInKnockBack() const override;
+         virtual void KnockBack(float speedxy, float speedz, float cos, float sin) override;
++        virtual bool KnockBackAck(uint32 counter, MovementInfo const& mi) override;
+         virtual void OnExplore(const AreaTableEntry *p) override;
+         virtual void Teleport(const Position &pos) override;
+ 
+--- a/src/game/MotionGenerators/MovementHandler.cpp
++++ b/src/game/MotionGenerators/MovementHandler.cpp
+@@ -543,10 +543,13 @@
+     recv_data >> counter;
+     recv_data >> movementInfo;
+ 
++    if (guid != mover->GetObjectGuid() || !m_anticheat->KnockBackAck(counter, movementInfo))
++        return; // Reject absent/replayed/malformed browser receipts before movement processing.
++
++    if (!ProcessMovementInfo(movementInfo, mover, _player, recv_data))
++        return;
++
+     m_anticheat->OrderAck(recv_data.GetOpcode(), counter);
+-
+-    if (!ProcessMovementInfo(movementInfo, mover, _player, recv_data))
+-        return;
+ 
+     if (mover->IsPlayer() && static_cast<Player*>(mover)->IsFreeFlying())
+         mover->SetCanFly(true);
+@@ -569,11 +572,13 @@
+ 
+     WorldPacket data(SMSG_MOVE_KNOCK_BACK, 9 + 4 + 4 + 4 + 4 + 4);
+     data << who->GetPackGUID();
+-    data << GetOrderCounter();
++    auto const counter = GetOrderCounter();
++    data << counter;
+     data << float(vcos);                                // x direction
+     data << float(vsin);                                // y direction
+     data << float(horizontalSpeed);                     // Horizontal speed
+     data << float(-verticalSpeed);                      // Z Movement speed (vertical)
++    m_anticheat->OrderSent(data.GetOpcode(), counter);
+     SendPacket(data);
+     IncrementOrderCounter();
+ 

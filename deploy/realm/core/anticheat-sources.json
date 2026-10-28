@@ -3,17 +3,29 @@
   "files": {
     "src/game/Anticheat/module/libanticheat.cpp": {
       "before": "ab480c74bd26a970585f723b0540e8135ed7f25ed00a00bd730d27f30f1f4e0e",
-      "after": "8bcd7ea71a5bb819c07532e8eb1f37a4370032ede2540fa80dd4eb3e5eabddfa"
+      "after": "f37e8bac0af313fbb4069b0edcd3e8a2e65315aa652d0dcbc667caf2851b5c6f"
     },
     "src/game/Anticheat/module/Movement/movement.cpp": {
       "before": "6ddeb246648d3c003275647440fb02e7b8d010fe4320873852062908c0a96014",
-      "after": "2f2a4052655b6daac0deeabeca520a9b22de5777ce1dc3ae4f5da272d9f615e0"
+      "after": "5f413de6ed5c3fdf1666584c6a593866db190f128ab5f0c23730165f0bda67cc"
     },
     "src/game/Anticheat/module/Movement/movement.hpp": {
       "before": "02863c6c69e7341296041a63bf845233de61daecc231b5eb1f27e1e5cd300617",
-      "after": "a06fd2364665c842183a8e2cca33ba1eab14f23a9df42b74ef77baf44a528c4e"
+      "after": "a169e5ffa9e0817dc3d4126e8dc08af6f1b5b897158a95e3b8676a3269008135"
+    },
+    "src/game/Anticheat/Anticheat.hpp": {
+      "before": "77455a783b8aa6b99de8de475cdb19325494a4986fb29788a68547cfaa082d1c",
+      "after": "50f584ed7490bfd654314febabab0f25f52df01a3c3fdb756751d0864be13ca5"
+    },
+    "src/game/Anticheat/module/libanticheat.hpp": {
+      "before": "ebf29e05d7da5dd2bd1806194b7317b7def35cc174d19d1efa07d24759c761c8",
+      "after": "4667675de48c120b97a0229ddf8196baee7230d6e18732ecde33f9702c63fdb5"
+    },
+    "src/game/MotionGenerators/MovementHandler.cpp": {
+      "before": "7d4f029f7c26a0edc39e5c40fd0c02a0045311558c1f186588c89204a0848dc1",
+      "after": "1f412cb5e3619d5db35863135e7d09c054ca6eebe6a1c6aba2df4c44a2b650a2"
     }
   },
-  "patch_sha256": "8bf75e2a99bc2f7811bc44a613d8772848913e5c6a783bd0188b08fb7dc9b353",
-  "header_sha256": "1b5965a09162fc68a16610646f552d855f2c760a188765f60dc82a4e925982a9"
+  "patch_sha256": "e91f078215ac687c307c387a915e08bcdb68a628d06be6e7d3a65c73471d489b",
+  "header_sha256": "898dd85378125a4e8000d32023b5435b20f2cef09d0c9316135c2d86a78a39c9"
 }

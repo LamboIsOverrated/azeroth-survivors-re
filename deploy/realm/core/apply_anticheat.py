@@ -12,7 +12,10 @@ import subprocess
 REVISION = 'de8f72993b9e1faa1bf92dd5505f3daec5cea3ce'
 PATHS = frozenset(('src/game/Anticheat/module/libanticheat.cpp',
                    'src/game/Anticheat/module/Movement/movement.cpp',
-                   'src/game/Anticheat/module/Movement/movement.hpp'))
+                   'src/game/Anticheat/module/Movement/movement.hpp',
+                   'src/game/Anticheat/Anticheat.hpp',
+                   'src/game/Anticheat/module/libanticheat.hpp',
+                   'src/game/MotionGenerators/MovementHandler.cpp'))
 HEADER = 'src/game/Anticheat/module/Movement/BrowserMovementBudget.h'
 
 

@@ -7,6 +7,44 @@
 
 namespace RealmBrowser
 {
+class KnockbackReceipt
+{
+    bool pending = false;
+    std::uint32_t issued = 0, counter = 0;
+    double cosine = 0, sine = 0, xy = 0, vz = 0;
+public:
+    bool Issue(std::uint32_t now, std::uint32_t serial, double c, double s, double speedXY, double speedZ)
+    {
+        pending = false;
+        if (!std::isfinite(c) || !std::isfinite(s) || !std::isfinite(speedXY) ||
+            !std::isfinite(speedZ) || speedXY < 0 || std::abs(c*c + s*s - 1.0) > .01)
+            return false;
+        issued = now; counter = serial; cosine = c; sine = s; xy = speedXY; vz = speedZ;
+        pending = true;
+        return true;
+    }
+    bool Matches(std::uint32_t now, std::uint32_t serial, std::uint32_t flags,
+                 double c, double s, double speedXY, double speedZ) const
+    {
+        if (!pending || std::uint32_t(now - issued) > 60000 || serial != counter ||
+            !(flags & 0x00002000u) || !std::isfinite(c) || !std::isfinite(s) ||
+            !std::isfinite(speedXY) || !std::isfinite(speedZ) ||
+            std::abs(c-cosine) > .01 || std::abs(s-sine) > .01 ||
+            std::abs(speedXY-xy) > .01 || std::abs(speedZ-vz) > .01)
+            return false;
+        return true;
+    }
+    bool Consume(std::uint32_t now, std::uint32_t serial, std::uint32_t flags,
+                 double c, double s, double speedXY, double speedZ)
+    {
+        if (!Matches(now, serial, flags, c, s, speedXY, speedZ))
+            return false;
+        pending = false;
+        return true;
+    }
+    bool Pending() const { return pending; }
+    void Clear() { pending = false; }
+};
 inline double FallElevation(double seconds, bool slowFall, double initial = -7.955547)
 {
     // Pinned Movement/util.cpp constants and jump velocity. Unlike that helper,
@@ -125,7 +163,7 @@ struct Point { double x, y, z; };
 class KnockbackEnvelope
 {
     bool active = false, sawAir = false;
-    std::uint32_t begin = 0;
+    std::uint32_t begin = 0, issued = 0;
     Point origin{};
     double xy = 0, vz = 0, cosine = 0, sine = 0;
 public:
@@ -136,12 +174,19 @@ public:
             !std::isfinite(speedXY) || !std::isfinite(speedZ) || !std::isfinite(c) || !std::isfinite(s) ||
             speedXY < 0 || std::abs(c * c + s * s - 1.0) > .01)
             return false;
-        active = true; sawAir = false; begin = now; origin = at;
+        active = true; sawAir = false; begin = issued = now; origin = at;
         xy = speedXY; vz = speedZ; cosine = c; sine = s;
         return true;
     }
     bool Active() const { return active; }
-    bool Expired(std::uint32_t now) const { return active && std::uint32_t(now - begin) > 60000; }
+    bool RebaseAtReceipt(std::uint32_t now, Point at)
+    {
+        if (!active || Expired(now) || !std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z))
+            return false;
+        begin = now; origin = at; sawAir = false;
+        return true; // The original issue-clock and absolute expiry never change.
+    }
+    bool Expired(std::uint32_t now) const { return active && std::uint32_t(now - issued) > 60000; }
     void End() { active = false; }
     double HorizontalSpeed() const { return xy; }
     Point Origin() const { return origin; }

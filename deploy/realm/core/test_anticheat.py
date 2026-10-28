@@ -16,7 +16,7 @@ class AnticheatCarryTests(unittest.TestCase):
     def test_checked_in_patch_and_header_are_the_reviewed_manifest(self):
         manifest = carry.load_manifest(HERE)
         self.assertEqual(manifest['revision'], 'de8f72993b9e1faa1bf92dd5505f3daec5cea3ce')
-        self.assertEqual(len(manifest['files']), 3)
+        self.assertEqual(len(manifest['files']), 6)
 
     def test_source_hash_mismatch_and_missing_file_fail_closed(self):
         manifest = carry.load_manifest(HERE)

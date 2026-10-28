@@ -37,7 +37,7 @@ struct FakeWarden { int packets=0; void SetCharEnumPacket(WorldPacket&&) { ++pac
     void HandlePacket(WorldPacket&) { ++packets; } };
 struct Checks {
     bool browser=true,heuristic=true,teleport=true; int transports=0; std::vector<int> calls;
-    bool CheckBrowserMovement(MovementInfo&) { calls.push_back(1); return browser; }
+    bool CheckBrowserMovement(MovementInfo&,int) { calls.push_back(1); return browser; }
     bool HandleAnticheatTests(MovementInfo&,Session*,const WorldPacket&) { calls.push_back(2); return heuristic; }
     bool CheckTeleport(int,MovementInfo&) { calls.push_back(3); return teleport; }
     void OnTransport(Player*,int) { ++transports; }
@@ -113,6 +113,9 @@ struct HookMovement {
     HookPlayer* _me; bool _justTeleported=false, _inKnockBack=false; int diagnostics=0;
     float clientSpeeds[6]{}; RealmBrowser::MovementBudget _browserBudget;
     RealmBrowser::AirborneCeiling _browserAir; RealmBrowser::KnockbackEnvelope _browserKnockback;
+    RealmBrowser::KnockbackReceipt _browserKnockbackReceipt;
+    bool _browserKnockbackAckStaged=false;
+    std::vector<std::pair<bool,uint32>> _worldChangeHistory;
     ObjectGuid _browserFrame; double _browserLastAirZ=0;
     bool _browserHasFrame=false, _browserSlowFall=false;
     void ResetBrowserMovement();
@@ -121,6 +124,7 @@ struct HookMovement {
     }
     void HandleTeleport(Position const&);
     void ExpireBrowserKnockback();
+    void HandleEnterWorld();
     bool HandleSpeedChangeAck(MovementInfo&,WorldSession*,WorldPacket const&,float);
 };
 '''
@@ -130,7 +134,9 @@ void CheckHooks() {
     HookPlayer player; HookMovement hooks{}; hooks._me=&player; Session session; MovementInfo mi;
     auto fall=[](double t){return RealmBrowser::FallElevation(t,false);};
     hooks._browserAir.Reset(1000,100); hookClock=3000;
+    hooks._browserKnockbackReceipt.Issue(1000,0,1,0,10,-10);
     hooks.HandleTeleport({1,2,1000,0});
+    assert(!hooks._browserKnockbackReceipt.Pending());
     assert(hooks._browserHasFrame && hooks._browserLastAirZ==1000 && !player.launched);
     WorldPacket ack; ack.opcode=CMSG_FORCE_RUN_SPEED_CHANGE_ACK;
     assert(hooks.HandleSpeedChangeAck(mi,&session,ack,7));
@@ -158,6 +164,12 @@ void CheckHooks() {
     hooks.HandleTeleport({1,2,500,0});
     assert(hooks._browserFrame.value==0 && hooks._browserLastAirZ==500);
     assert(hooks._browserAir.Accept(64100,500,500,false,fall));
+    hooks._browserKnockbackReceipt.Issue(64000,0,1,0,10,-10);
+    hooks._browserKnockback.Start(64000,{1,2,500},10,-10,1,0);
+    player.launched=true;
+    hooks.HandleEnterWorld();
+    assert(!hooks._browserKnockbackReceipt.Pending() && !hooks._browserKnockbackAckStaged);
+    assert(!hooks._browserKnockback.Active() && !player.launched);
 }
 '''
 
@@ -170,6 +182,7 @@ def run(source_root, compiler):
     movement = (source_root/'src/game/Anticheat/module/Movement/movement.cpp').read_text(encoding='utf-8')
     hooks = '\n'.join(method(movement, signature).replace('Movement::', 'HookMovement::') for signature in (
         'void Movement::ResetBrowserMovement(', 'void Movement::HandleTeleport(', 'void Movement::ExpireBrowserKnockback(',
+        'void Movement::HandleEnterWorld(',
         'bool Movement::HandleSpeedChangeAck('))
     with tempfile.TemporaryDirectory(prefix='realm-anticheat-dispatch-') as temporary:
         root = Path(temporary)
@@ -183,6 +196,8 @@ def run(source_root, compiler):
             command = [compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(cpp), '-o', str(binary)]
         subprocess.run(command, cwd=root, check=True)
         subprocess.run([str(binary)], cwd=root, check=True)
+    from check_knockback_contract import run as check_knockback
+    check_knockback(source_root, compiler)
 
 
 if __name__ == '__main__':
