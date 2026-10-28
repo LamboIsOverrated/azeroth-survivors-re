@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 HERE = pathlib.Path(__file__).parent
 spec = importlib.util.spec_from_file_location('runtime', HERE / 'runtime.py')
@@ -117,6 +118,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn('DB_REALMWEB_PASSWORD', options['env'])
         self.assertNotIn('SOAP_ADMIN_PASSWORD', options['env'])
         self.assertEqual(options['env']['HOME'], '/home/mangos')
+
+    def test_database_failure_keeps_sensitive_diagnostics_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logfile = pathlib.Path(tmp) / 'database-error.log'
+            result = subprocess.CompletedProcess([], 1, '', 'ERROR 1141 (42000): secret SQL text')
+            with patch.object(runtime.subprocess, 'run', return_value=result):
+                with self.assertRaisesRegex(RuntimeError, '1141') as error:
+                    runtime.sql(runtime.settings(self.env()), 'SELECT 1', diagnostics=logfile)
+            self.assertNotIn('secret SQL text', str(error.exception))
+            self.assertEqual(logfile.read_text(), result.stderr)
 
 
 if __name__ == '__main__':

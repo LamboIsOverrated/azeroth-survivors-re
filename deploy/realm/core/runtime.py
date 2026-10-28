@@ -144,13 +144,16 @@ UPDATE classicrealmd.realmlist SET name='Vanilla TEST PvP',address='{cfg['REALM_
 """
 
 
-def sql(cfg, statement):
+def sql(cfg, statement, diagnostics=Path('/realm-data/logs/database-error.log')):
     command = ['mariadb', '--protocol=tcp', '-h', cfg['DB_HOST'], '-P', cfg['DB_PORT'], '-uroot',
                '--connect-timeout=5', '--batch', '--skip-column-names']
     result = subprocess.run(command, input=statement, text=True, capture_output=True,
                             env=dict(os.environ, MYSQL_PWD=cfg['DB_ROOT_PASSWORD']))
     if result.returncode:
-        raise RuntimeError('database command failed; inspect private database diagnostics')
+        write_private(diagnostics, result.stderr)
+        match = re.search(r'ERROR\s+(\d+)', result.stderr)
+        code = match.group(1) if match else 'unknown'
+        raise RuntimeError('database command failed (code ' + code + '); inspect private database diagnostics')
     return result.stdout.strip()
 
 
@@ -364,6 +367,14 @@ def main():
                 STATE[key] = listening(port)
             STATE['ready'] = all(STATE[key] for key in ('database', 'data', 'login', 'world', 'soap'))
             STATE['phase'] = 'listeners-ready' if STATE['ready'] else 'world-starting'
+    except Exception as error:
+        # Keep the private status/SSH surface alive for repair without repeatedly
+        # executing a failing initialization or erasing partially created data.
+        STATE['phase'] = 'initialization-failed'
+        STATE['ready'] = False
+        print('Core initialization stopped: ' + str(error), flush=True)
+        stop_children(CHILDREN)
+        STOP.wait()
     finally:
         STATE['ready'] = False
         stop_children(CHILDREN)
