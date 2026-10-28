@@ -26,3 +26,11 @@ impl<T> LockRecover<T> for std::sync::Mutex<T> {
 mod net {
     include!(concat!(env!("OUT_DIR"), "/actual_io.rs"));
 }
+
+// Exercise the exact dependency-free browser policies in the existing headless CI gate.
+#[cfg(test)]
+#[path = "../../../src/player/browser_entry_state.rs"]
+mod browser_entry_state;
+#[cfg(test)]
+#[path = "../../../src/player/browser_movement_clock.rs"]
+mod browser_movement_clock;
