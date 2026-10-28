@@ -99,7 +99,7 @@
   const { bind } = await import('./wasi_stubs.js');
   const { boot } = await import('./boot.js');
   msg.remove(); // boot()'s overlay takes over from here — see web/boot.js
-  const w = await boot(init);
+  const w = await boot(init, { variant: 'mmo' });
   bind(w.memory);
   delete window.__wenilla_env;
 </script>

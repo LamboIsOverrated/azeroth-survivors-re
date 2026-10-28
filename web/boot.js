@@ -34,7 +34,7 @@ const PREFETCH_CONCURRENCY = 8;
 
 export async function boot(init, opts = {}) {
   const q = new URLSearchParams(location.search);
-  const ui = createBootUi();
+  const ui = createBootUi(opts.variant === 'mmo');
   if (q.get('boottrace') === '1') window.__wenilla_boottrace = [];
   const skipPrefetch = q.get('boottrace') === '1' || q.get('noprefetch') === '1';
   installProgressHook(ui, skipPrefetch);
@@ -189,7 +189,7 @@ function createCornerLine() {
 }
 
 /// The overlay itself. Same dark theme as the pages' own chrome; no dependencies, no images.
-function createBootUi() {
+function createBootUi(isMmo) {
   const root = document.createElement('div');
   root.id = 'wenilla-boot';
   root.innerHTML = `
@@ -242,8 +242,8 @@ function createBootUi() {
     </style>
     <div class="embers"></div>
     <div class="box">
-      <div class="title">Azeroth Survivors</div>
-      <div class="by">a fan-made roguelike by Aethus</div>
+      <div class="title">${isMmo ? 'Azeroth' : 'Azeroth Survivors'}</div>
+      <div class="by">${isMmo ? 'A shared world · TEST PvP realm' : 'a fan-made roguelike by Aethus'}</div>
       <div class="stage">Loading…</div>
       <div class="bar"><i></i></div>
       <div class="data"></div>
@@ -258,7 +258,14 @@ function createBootUi() {
     e.style.animationDelay = `${-Math.random() * 14}s`;
     embers.appendChild(e);
   }
-  const tips = [
+  const tips = isMmo ? [
+    'Choose your faction, create a character, and enter the shared world.',
+    'Use W, A, S and D to move. Right-click a character to interact.',
+    'Press L to open your quest log and B to open your backpack.',
+    'Players from the opposing faction can attack in contested territory.',
+    'Log out through the game menu to save and return to character selection.',
+    'This is a TEST realm. Its currency cannot be redeemed for crypto.',
+  ] : [
     'Your spells cast themselves. Your only job is to not die.',
     'Gems pull toward you once you are close. Greed gets heroes killed.',
     'A boss arrives every couple of minutes. You will hear about it.',
