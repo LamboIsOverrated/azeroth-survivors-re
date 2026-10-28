@@ -1,0 +1,48 @@
+# Realm source provenance
+
+Imported from [Arnesen/wenilla](https://github.com/Arnesen/wenilla/tree/d68dcc539460e8fc5169105c790443489d91ca76/crates/wenilla-realm),
+commit `d68dcc539460e8fc5169105c790443489d91ca76`, directory `crates/wenilla-realm`.
+The source archive was retrieved from GitHub's commit-addressed codeload endpoint.
+Only this crate's source, templates, and tests were imported; no game install assets.
+The repository's MIT OR Apache-2.0 licenses apply; original authorship is preserved
+in the source and pinned upstream history. Local changes add split-service config,
+TEST labels, a private identity endpoint and a protocol-bound relay.
+
+`REALM_REMOTE_CONFIG=1` is required when the core owns its own volume. In this mode
+the web setup creates only a web admin and uses the operator-provided `SOAP_URL`,
+`SOAP_BOOTSTRAP_USER`, and `SOAP_BOOTSTRAP_PASS`. It never rotates the console,
+changes realmlist or edits core files. Config/preset endpoints are disabled.
+The core service owns its configuration and non-GM account defaults.
+
+Use `REALM_BIND=127.0.0.1:8090`, `REALM_STATE_DIR=/state`,
+`CLIENT_DATA=/state/client/Data`, `REALM_WWW=/app/www`, and the public HTTPS
+origin in `REALM_PUBLIC_URL`. Set `MARIADB_URL` to the dedicated read-only
+realmweb account, and both `REALMD_HOST` and `MANGOSD_HOST` to the private core.
+Keep `REALM_COOKIE_INSECURE` and `WENILLA_DEV_QUERY_CREDS` unset in hosted use.
+Back up `realm.sqlite` and `master.key` together.
+
+The relay accepts only an exact configured Origin and authenticated session.
+It parses complete Vanilla SRP challenge/proof/list messages and the first
+world AUTH_SESSION message before forwarding them. Their account must match
+the session's provisioned game account; reconnect auth messages are rejected.
+The authoritative core still verifies SRP and the world session digest.
+This does not claim gameplay anti-cheat or live two-player verification.
+
+The pinned core's [WorldSocket.cpp](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/game/Server/WorldSocket.cpp#L209)
+closes a connection on a second AUTH_SESSION and validates its digest against the
+named account's SRP session key. The relay depends on that core behavior after
+validating the initial plain world handshake; later headers are encrypted.
+
+`GET /api/character-balances` returns only the authenticated provisioned account's
+characters, with exact decimal `moneyUnits`, `online`, and `snapshot: last-saved`.
+No browser account or character identifiers are accepted. These are TEST game
+units, not an onchain balance or a redeemable vault. The MariaDB fixture test uses
+`TEST_BALANCES_MARIADB_URL` and session-local temporary tables in a disposable DB
+with `classicrealmd` and `classiccharacters` schemas and CREATE TEMPORARY TABLES
+permission. Without that environment the fixture explicitly skips.
+
+Browser builds: `WEB_VARIANT=mmo scripts/web-build.sh` produces `web/dist` from
+`wenilla` (ordinary `run`); `WEB_VARIANT=survivors scripts/web-build.sh` produces
+`web/dist-survivors` from `wenilla-survivors` (`run_survivors`). `WEB_DIST` overrides
+the output folder when packaging the separate preview. Both emit the stable
+`wenilla.js` / `wenilla_bg.wasm` names expected by their own pages.

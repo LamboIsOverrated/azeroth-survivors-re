@@ -14,27 +14,34 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-DIST=web/dist
+VARIANT="${WEB_VARIANT:-mmo}"
+case "${VARIANT}" in
+  mmo) PACKAGE=wenilla; PAGE=web/realm.html; DIST=web/dist ;;
+  survivors) PACKAGE=wenilla-survivors; PAGE=web/index.html; DIST=web/dist-survivors ;;
+  *) echo "WEB_VARIANT must be mmo or survivors" >&2; exit 1 ;;
+esac
+DIST="${WEB_DIST:-${DIST}}"
 BACKEND="${WEB_BACKEND:-webgpu}"
 PROFILE="${WEB_PROFILE:-release}"
 case "${PROFILE}" in
   release|ship) ;;
   *) echo "WEB_PROFILE must be release or ship" >&2; exit 1 ;;
 esac
-WASM="target/wasm32-unknown-unknown/${PROFILE}/wenilla.wasm"
+WASM="target/wasm32-unknown-unknown/${PROFILE}/${PACKAGE//-/_}.wasm"
 export WASI_SDK="${WASI_SDK:-$(pwd)/tools/wasi-sdk}"
 
 command -v wasm-bindgen >/dev/null || { echo "wasm-bindgen not found — run scripts/web-setup.sh" >&2; exit 1; }
 [ -d "${WASI_SDK}" ] || { echo "wasi-sdk not at ${WASI_SDK} — run scripts/web-setup.sh (or set WASI_SDK)" >&2; exit 1; }
 
-cargo build --profile "${PROFILE}" --target wasm32-unknown-unknown -p wenilla --no-default-features --features "${BACKEND}"
+cargo build --profile "${PROFILE}" --target wasm32-unknown-unknown -p "${PACKAGE}" --no-default-features --features "${BACKEND}"
 
 mkdir -p "${DIST}"
 # The name section is half the file (~170 MB -> ~90 MB) and only feeds stack-trace symbols.
 strip=(--remove-name-section --remove-producers-section)
 [ "${WEB_DEBUG:-0}" = 1 ] && strip=()
-wasm-bindgen --target web --no-typescript ${strip[@]+"${strip[@]}"} --out-dir "${DIST}" "${WASM}"
+wasm-bindgen --target web --out-name wenilla --no-typescript ${strip[@]+"${strip[@]}"} --out-dir "${DIST}" "${WASM}"
 cp web/index.html web/favicon.svg web/wasi_stubs.js web/boot.js web/platform.js web/bridge.js "${DIST}/"
+cp "${PAGE}" "${DIST}/index.html"
 # The deployment gateway serves these directly; standalone hosts may copy a built wallet too.
 if [ -f deploy/public/wallet.bundle.js ]; then
   cp deploy/public/wallet.bundle.js deploy/public/style.css "${DIST}/"
