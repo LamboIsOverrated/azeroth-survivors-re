@@ -144,14 +144,48 @@ surface in separate private fixtures. A wall attack should be under the distance
 budget so collision, rather than distance alone, explains the refusal. Actual
 map checks and server rejection logs must corroborate these cases.
 
-The harness acknowledges genuine server near teleports and speed changes using
-the last accepted pose and records each event. This is not yet a coordinated
-midair teleport/speed-change drill: an operator must supply measured phases and
-cross-check the new destination. Unexpected world transfers and knockback fail
-closed because this version does not synthesize passenger or forced trajectories.
+For one phased near-teleport test, a step may specify `await_teleport` with
+`destination: [x,y,z]` and `timeout_ms` (1,000–10,000). The expected destination
+must be at the measured origin's XY and above its floor by at most ten yards.
+The probe emits `operator-teleport-ready` and waits for a genuine server teleport
+packet for its primary avatar, within 0.05 yard of that destination. The operator
+uses the normal console-safe `tele name` and a temporary measured bookmark.
+The probe does not send that command, edit a database or fabricate an ACK state.
+Unexpected teleport destinations fail; the expected packet is recorded and ACKed
+with its real counter before subsequent movement begins.
+
+Subsequent steps may set `relative_to_teleport: true` to use the actual received
+destination. `fall_from_teleport: true` computes a normal zero-initial-velocity
+drop from the local monotonic ACK-send receipt time, using the pinned gravity and
+terminal speed, clamped at the measured origin floor. It also supplies the elapsed
+fall time. This requires no arbitrary Z offset, expires after ten seconds, and
+the last step must finish in this fall frame so the saved pose returns to the
+original measured floor. A voluntary falling packet still needs the appropriate
+flag/jump tail; a landing uses the normal fall-land opcode and flags zero.
+
+Use a positive launch/airborne control to establish the prior air baseline,
+then the operator gate, a first 39-yard forged move, an immediate legitimate
+drop packet still above the old floor, descent and landing. A bounded gap while
+awaiting the operator models delayed movement delivery; it does not establish
+continuous rendered-client physics. Count the first forgery only with its native
+distance-budget reason after the real teleport ACK, rather than a packet dropped
+by an unfinished teleport. Require the legitimate post-ACK airborne relay,
+recovery, saved pose, unchanged health and independent operator log correlation.
+Speed-change packets are acknowledged from the latest accepted pose and recorded;
+they require a separate audited normal server trigger for a speed-reset drill.
+Unexpected world transfers and knockback fail closed because this version does
+not synthesize passenger or forced trajectories.
 Full transport boarding/detach, knockback/withheld landing, taxi, slow fall,
 resurrection, and midair reset acceptance therefore remain separate world/client
 gates. Do not turn those missing runs into a pass from model tests.
+
+On the pinned source, modify-speed/aspeed, cast and aura commands require an
+in-game selected-player session (`allowConsole=false`). Some debug entries claim
+console support but dereference `GetSession()->GetPlayer()` (including transports
+and dbscript variants). Do not use these through SOAP or alter permissions to
+force a physics test. An attended private operator UI or a separately verified
+normal noncombat mechanism is required for those actions. The ordinary test
+avatars retain security zero throughout.
 
 Correlate every negative send with the dedicated character and actual isolated
 world log `Browser movement rejected: REASON` (or an identified stock validation

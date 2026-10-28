@@ -1,3 +1,4 @@
+mod phases;
 use anyhow::{bail, ensure, Context, Result};
 use benilla_protocol::{
     messages::opcode as op, JumpInfo, Poll, SessionEvent, TransportPose, WorldSession, WorldWriter,
@@ -24,6 +25,12 @@ struct Identity {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TeleportGate {
+    destination: [f32; 3],
+    timeout_ms: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Step {
     name: String,
     delay_ms: u64,
@@ -33,6 +40,12 @@ struct Step {
     accept: bool,
     #[serde(default)]
     clear_flags: u32,
+    #[serde(default)]
+    await_teleport: Option<TeleportGate>,
+    #[serde(default)]
+    relative_to_teleport: bool,
+    #[serde(default)]
+    fall_from_teleport: bool,
     #[serde(default = "default_observe_ms")]
     observe_ms: u64,
     #[serde(default)]
@@ -164,7 +177,31 @@ fn validate(f: &Fixture) -> Result<()> {
         (3..=48).contains(&f.steps.len()),
         "require 3..48 bounded steps"
     );
+    let mut has_teleport = false;
     for (i, s) in f.steps.iter().enumerate() {
+        if let Some(gate) = &s.await_teleport {
+            ensure!(
+                !has_teleport && (1000..=10000).contains(&gate.timeout_ms),
+                "only one bounded teleport phase allowed"
+            );
+            ensure!(
+                gate.destination.iter().all(|v| v.is_finite())
+                    && (gate.destination[0] - f.origin[0]).abs() < 0.01
+                    && (gate.destination[1] - f.origin[1]).abs() < 0.01
+                    && gate.destination[2] > f.origin[2]
+                    && gate.destination[2] <= f.origin[2] + 10.,
+                "teleport drop must be above exact measured floor XY"
+            );
+            has_teleport = true;
+        }
+        ensure!(
+            !s.relative_to_teleport || has_teleport,
+            "teleport reference requires a prior expected server event"
+        );
+        ensure!(
+            !s.fall_from_teleport || (s.relative_to_teleport && s.offset[2] == 0.),
+            "fall requires teleport frame and no arbitrary Z offset"
+        );
         ensure!(
             (100..=1500).contains(&s.observe_ms),
             "invalid observation interval"
@@ -225,12 +262,18 @@ fn validate(f: &Fixture) -> Result<()> {
     ensure!(
         f.steps
             .iter()
-            .map(|s| s.delay_ms + s.observe_ms)
+            .map(|s| s.delay_ms
+                + s.observe_ms
+                + s.await_teleport.as_ref().map_or(0, |g| g.timeout_ms))
             .sum::<u64>()
             <= 110000,
         "step schedule exceeds deadline reserve"
     );
     let last = f.steps.last().unwrap();
+    ensure!(
+        !has_teleport || (last.relative_to_teleport && last.fall_from_teleport),
+        "teleport phase must finish on measured floor"
+    );
     ensure!(
         last.accept && distance(last.offset, [0.; 3]) < 0.01,
         "final positive step must return to origin"
@@ -371,6 +414,10 @@ fn connect(
         logged_out: false,
     })
 }
+struct TeleportReceipt {
+    position: [f32; 3],
+    at: Instant,
+}
 struct Run {
     peers: Vec<Peer>,
     rx: mpsc::Receiver<Input>,
@@ -379,6 +426,8 @@ struct Run {
     relays: Vec<[f32; 3]>,
     sent: usize,
     map: u32,
+    expected_teleport: Option<[f32; 3]>,
+    teleport: Option<TeleportReceipt>,
 }
 impl Run {
     fn count(&mut self) -> Result<()> {
@@ -458,11 +507,25 @@ impl Run {
                     position,
                     orientation,
                 } if guid == p.guid => {
-                    self.evidence
-                        .write(json!({"event":"server-teleport","side":side,"pose":position}))?;
+                    ensure!(
+                        side == 0
+                            && self.expected_teleport.is_some_and(|wanted| {
+                                phases::matches_destination(wanted, position)
+                            }),
+                        "unexpected or mismatched server teleport"
+                    );
+                    self.evidence.write(json!({"event":"server-teleport","side":side,"pose":position,"counter":counter}))?;
                     p.pose = position;
                     p.orientation = orientation;
                     p.writer.teleport_ack(guid, counter)?;
+                    self.teleport = Some(TeleportReceipt {
+                        position,
+                        at: Instant::now(),
+                    });
+                    self.expected_teleport = None;
+                    self.evidence.write(
+                        json!({"event":"server-teleport-ack-sent","guid":guid,"counter":counter}),
+                    )?;
                 }
                 SessionEvent::ForceSpeedChange {
                     guid,
@@ -522,8 +585,36 @@ impl Run {
         Ok(())
     }
     fn step(&mut self, f: &Fixture, s: &Step) -> Result<()> {
+        if let Some(gate) = &s.await_teleport {
+            self.teleport = None;
+            self.expected_teleport = Some(gate.destination);
+            self.evidence.write(json!({"event":"operator-teleport-ready","case":s.name,"destination":gate.destination,"timeout_ms":gate.timeout_ms}))?;
+            let deadline = Instant::now() + Duration::from_millis(gate.timeout_ms);
+            while self.expected_teleport.is_some() && Instant::now() < deadline {
+                self.pump(Duration::from_millis(50))?;
+            }
+            ensure!(
+                self.expected_teleport.is_none() && self.teleport.is_some(),
+                "expected server teleport did not arrive"
+            );
+        }
         self.pump(Duration::from_millis(s.delay_ms))?;
-        let pos = std::array::from_fn(|i| f.origin[i] + s.offset[i]);
+        let base = if s.relative_to_teleport {
+            self.teleport
+                .as_ref()
+                .context("server teleport receipt missing")?
+                .position
+        } else {
+            f.origin
+        };
+        let mut pos = std::array::from_fn(|i| base[i] + s.offset[i]);
+        let fall_ms = if s.fall_from_teleport {
+            let elapsed = self.teleport.as_ref().unwrap().at.elapsed();
+            pos = phases::fall_position(pos, elapsed.as_secs_f64(), f.origin[2])?;
+            u32::try_from(elapsed.as_millis())?
+        } else {
+            s.fall_ms
+        };
         self.relays.clear();
         if !s.accept {
             self.forbidden.push((pos, s.clear_flags));
@@ -551,7 +642,7 @@ impl Run {
             pos,
             f.orientation,
             0.,
-            s.fall_ms,
+            fall_ms,
             jump,
             transport,
         )?;
@@ -693,6 +784,8 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         relays: vec![],
         sent: 0,
         map: f.map,
+        expected_teleport: None,
+        teleport: None,
     };
     run.pump(Duration::from_secs(3))?;
     ensure!(
@@ -839,6 +932,41 @@ mod tests {
         ] {
             assert!(!peer_closed(message));
         }
+    }
+    #[test]
+    fn teleport_phase_requires_exact_bounded_server_gate_then_floor_finish() {
+        let mut f = fixture();
+        f.steps[1].await_teleport = Some(TeleportGate {
+            destination: [1., 2., 8.],
+            timeout_ms: 5000,
+        });
+        f.steps[1].relative_to_teleport = true;
+        f.steps[2].relative_to_teleport = true;
+        f.steps[2].fall_from_teleport = true;
+        validate(&f).unwrap();
+        f.steps[1].await_teleport = None;
+        assert!(validate(&f).is_err());
+        f.steps[1].await_teleport = Some(TeleportGate {
+            destination: [1., 2., 14.],
+            timeout_ms: 5000,
+        });
+        assert!(validate(&f).is_err());
+        f.steps[1].await_teleport = Some(TeleportGate {
+            destination: [1., 2., 8.],
+            timeout_ms: 11000,
+        });
+        assert!(validate(&f).is_err());
+        f.steps[1].await_teleport = Some(TeleportGate {
+            destination: [2., 2., 8.],
+            timeout_ms: 5000,
+        });
+        assert!(validate(&f).is_err());
+        f.steps[1].await_teleport = Some(TeleportGate {
+            destination: [1., 2., 8.],
+            timeout_ms: 5000,
+        });
+        f.steps[2].fall_from_teleport = false;
+        assert!(validate(&f).is_err());
     }
     #[test]
     fn valid_isolated_noncombat_fixture() {
