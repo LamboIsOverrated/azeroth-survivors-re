@@ -224,6 +224,24 @@ index 730a8eb..e34a7d2 100644
          std::this_thread::sleep_for(std::chrono::milliseconds(50));
  
      buffer.push_back(0);
+diff --git a/src/realmd/Main.cpp b/src/realmd/Main.cpp
+index b74c56b..8e58bde 100644
+--- a/src/realmd/Main.cpp
++++ b/src/realmd/Main.cpp
+@@ -105,6 +105,13 @@ int main(int argc, char* argv[])
+         return 1;
+     }
+ 
++    // A version query must not read config, daemonize, or initialize databases.
++    if (vm.count("version"))
++    {
++        std::cout << _PACKAGENAME << " Auth server v" << VERSION << std::endl;
++        return 0;
++    }
++
+ #ifdef _WIN32                                                // windows service command need execute before config read
+     if (vm.count("s"))
+     {
 diff --git a/src/shared/Database/WorldBridge.h b/src/shared/Database/WorldBridge.h
 new file mode 100644
 --- /dev/null

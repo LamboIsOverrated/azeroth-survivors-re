@@ -47,7 +47,8 @@ def gather(root, libraries):
         if not path.resolve().is_relative_to(source.resolve()) or path.name.startswith('.env') or path.suffix.lower() in ('.mpq', '.sqlite', '.key', '.pem'):
             raise ValueError('Unapproved source-package file')
         add(path.relative_to(root).as_posix())
-    for name in ('runtime.py', 'adt_repair.py', 'repair_client.py', 'smoke_runtime.py'):
+    for name in ('runtime.py', 'adt_repair.py', 'repair_client.py', 'smoke_runtime.py',
+                 'world_inventory.py', 'extraction-profile.json'):
         add('opt/railway-core/' + name)
     for path in (root / 'opt/mangos/etc').glob('*.dist'):
         add(path.relative_to(root).as_posix())

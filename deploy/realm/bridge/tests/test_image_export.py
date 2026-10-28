@@ -16,7 +16,8 @@ class ImageExportTests(unittest.TestCase):
         for name in ('opt/mangos/bin/mangosd', 'opt/mangos/bin/realmd', 'lib/libfixture.so',
                      'opt/railway-core/source/cmangos-bridge-source.tar.gz', 'opt/railway-core/runtime.py',
                      'opt/railway-core/adt_repair.py', 'opt/railway-core/repair_client.py',
-                     'opt/railway-core/smoke_runtime.py', 'opt/mangos/etc/mangosd.conf.dist',
+                     'opt/railway-core/smoke_runtime.py', 'opt/railway-core/world_inventory.py',
+                     'opt/railway-core/extraction-profile.json', 'opt/mangos/etc/mangosd.conf.dist',
                      'config/private.conf', 'realm-data/client/Data/private.MPQ'):
             path = Path(root) / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +34,8 @@ class ImageExportTests(unittest.TestCase):
                 names = archive.getnames()
                 self.assertIn('root/lib/libfixture.so', names)
                 self.assertIn('root/opt/mangos/etc/mangosd.conf.dist', names)
+                self.assertIn('root/opt/railway-core/world_inventory.py', names)
+                self.assertIn('root/opt/railway-core/extraction-profile.json', names)
                 self.assertFalse(any('private' in name for name in names))
                 self.assertEqual(actual['files']['root/opt/mangos/bin/mangosd']['size'], len(b'opt/mangos/bin/mangosd'))
 

@@ -11,6 +11,7 @@
     "src/game/Chat/Level3.cpp": "2dc12faad03e5b027c4e41566aa7b88f4109c75a8111e14bcecee35633d09bf6",
     "src/game/World/World.cpp": "b61884f2a30065da8179ae38a7534ac017327f9a01c035281c55ad389f78f13c",
     "src/game/World/World.h": "3fa53d2883533f4d205c9aeaf13af224670d12f5e623cc1fd79dc9eca4de16a3",
-    "src/mangosd/MaNGOSsoap.cpp": "f5a3a8779fbdef97589948a9741dc6ca14f28f88a3c715e09139fd199560bce7"
+    "src/mangosd/MaNGOSsoap.cpp": "f5a3a8779fbdef97589948a9741dc6ca14f28f88a3c715e09139fd199560bce7",
+    "src/realmd/Main.cpp": "de28d327c211c3dbd20134bf852200e1cd9efa721c0011683484495aba2cabae"
   }
 }

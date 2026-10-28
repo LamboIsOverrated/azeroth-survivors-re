@@ -17,6 +17,7 @@ const files = [
   "src/game/World/World.cpp",
   "src/game/World/World.h",
   "src/mangosd/MaNGOSsoap.cpp",
+  "src/realmd/Main.cpp",
 ];
 const before = join(here, ".audit/before"),
   after = join(here, ".audit/after");
@@ -55,6 +56,16 @@ bool ChatHandler::HandleRealmBridgeCommand(char* args)
 }
 `;
 const changes = {
+  "src/realmd/Main.cpp": (text) =>
+    replace(
+      text,
+      "#ifdef _WIN32                                                // windows service command need execute before config read",
+      "    // A version query must not read config, daemonize, or initialize databases.\n" +
+        '    if (vm.count("version"))\n    {\n' +
+        '        std::cout << _PACKAGENAME << " Auth server v" << VERSION << std::endl;\n' +
+        "        return 0;\n    }\n\n" +
+        "#ifdef _WIN32                                                // windows service command need execute before config read",
+    ),
   "src/mangosd/MaNGOSsoap.cpp": (text) =>
     replace(
       replace(
