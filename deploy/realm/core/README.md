@@ -52,6 +52,11 @@ builds PlayerBots tables even with its flag off; all bot runtime settings remain
 disabled. Bootstrap root credentials are not passed to the game processes
 through generated configuration; only the bootstrap helper receives them.
 
+After game launch begins, a child exit or supervisor error stops the sibling,
+closes HTTP and the volume lock, and exits nonzero so Railway's `ON_FAILURE`
+policy can restart the realm. Only a failure before game launch uses the
+indefinite operator repair hold. Completed extraction markers survive retries.
+
 To initialize data, privately stage the complete compatible client install under
 `/realm-data/client/Data` (preserve the patch chain and locale directories), then
 create `/realm-data/client/.input-ready` **after** transfer/validation finishes.
