@@ -28,7 +28,10 @@ class RuntimeImageSmoke(unittest.TestCase):
             binaries = [os.environ.get('CORE_SMOKE_REALMD', commands[0][0]),
                         os.environ.get('CORE_SMOKE_MANGOSD', commands[1][0])]
             for binary, command in zip(binaries, commands):
-                result = subprocess.run([binary, *command[1:], '--help'], capture_output=True, text=True,
+                # Auth's pinned parser has no --help option; --version still
+                # parses the generated arguments and exits without opening SQL.
+                inspection = '--version' if command[0].endswith('/realmd') else '--help'
+                result = subprocess.run([binary, *command[1:], inspection], capture_output=True, text=True,
                                         timeout=15, env=runtime.game_options(cfg)['env'])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if command[0].endswith('/mangosd'):
