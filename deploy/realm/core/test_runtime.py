@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import ExitStack
 import json
 import os
 import pathlib
@@ -32,23 +33,26 @@ class RuntimeTests(unittest.TestCase):
                 stop.is_set.return_value = False
                 server = unittest.mock.Mock()
                 fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2, flock=lambda *args: None)
-                with patch.dict(sys.modules, {'fcntl': fake_fcntl}), \
-                        patch.object(runtime, 'Path', return_value=root), \
-                        patch.object(runtime, 'settings', return_value=cfg), \
-                        patch.object(runtime, 'configure'), \
-                        patch.object(runtime, 'bootstrap', side_effect=None if failed_after_launch else RuntimeError('bootstrap failed')), \
-                        patch.object(runtime, 'extraction_ready', return_value=True), \
-                        patch.object(runtime, 'prepare_game_permissions'), \
-                        patch.object(runtime, 'game_commands', return_value=[['fake-world']]), \
-                        patch.object(runtime.subprocess, 'Popen', return_value=child), \
-                        patch.object(runtime, 'stop_children') as stop_children, \
-                        patch.object(runtime, 'STOP', stop), \
-                        patch.object(runtime, 'CHILDREN', []), \
-                        patch.object(runtime, 'ThreadingHTTPServer', return_value=server), \
-                        patch.object(runtime.threading, 'Thread'), \
-                        patch.object(runtime.signal, 'signal'), \
-                        patch.object(runtime.sys, 'argv', ['runtime.py', 'serve']), \
-                        patch.dict(runtime.os.environ, {'REALM_MAINTENANCE': '0'}, clear=True):
+                contexts = [patch.dict(sys.modules, {'fcntl': fake_fcntl}),
+                            patch.object(runtime, 'Path', return_value=root),
+                            patch.object(runtime, 'settings', return_value=cfg),
+                            patch.object(runtime, 'configure'),
+                            patch.object(runtime, 'bootstrap', side_effect=None if failed_after_launch else RuntimeError('bootstrap failed')),
+                            patch.object(runtime, 'extraction_ready', return_value=True),
+                            patch.object(runtime, 'prepare_game_permissions'),
+                            patch.object(runtime, 'game_commands', return_value=[['fake-world']]),
+                            patch.object(runtime.subprocess, 'Popen', return_value=child),
+                            patch.object(runtime, 'STOP', stop),
+                            patch.object(runtime, 'CHILDREN', []),
+                            patch.object(runtime, 'ThreadingHTTPServer', return_value=server),
+                            patch.object(runtime.threading, 'Thread'),
+                            patch.object(runtime.signal, 'signal'),
+                            patch.object(runtime.sys, 'argv', ['runtime.py', 'serve']),
+                            patch.dict(runtime.os.environ, {'REALM_MAINTENANCE': '0'}, clear=True)]
+                with ExitStack() as stack:
+                    for context in contexts:
+                        stack.enter_context(context)
+                    stop_children = stack.enter_context(patch.object(runtime, 'stop_children'))
                     if failed_after_launch:
                         with self.assertRaisesRegex(RuntimeError, 'core child exited'):
                             runtime.main()
@@ -133,12 +137,36 @@ class RuntimeTests(unittest.TestCase):
                 runtime.settings(env)
 
     def test_compiled_capability_flags_accept_only_zero_or_one(self):
-        for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED', 'REALM_BRIDGE_TEST_ENABLE'):
+        for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED', 'REALM_BRIDGE_TEST_ENABLE',
+                     'CORE_BROWSER_MOVEMENT_COMPILED', 'REALM_BROWSER_MOVEMENT_ENABLE'):
             for value in ('true', '2', '-1', '', 1):
                 env = self.env()
                 env[name] = value
                 with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
                     runtime.settings(env)
+
+    def test_browser_movement_requires_patched_capability_and_has_no_ban_actions(self):
+        with self.assertRaisesRegex(ValueError, 'patched browser movement'):
+            runtime.settings(self.env(REALM_BROWSER_MOVEMENT_ENABLE='1'))
+        for compiled, enabled in (('0', '0'), ('1', '0'), ('1', '1')):
+            with self.subTest(compiled=compiled, enabled=enabled), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                templates = root/'templates'
+                templates.mkdir()
+                for name in ('mangosd', 'realmd', 'anticheat', 'aiplayerbot', 'ahbot'):
+                    (templates/(name+'.conf.dist')).write_text(
+                        '[Config]\nEnable=0\nWarden.Enable=1\nMovement.Teleport.TickAction=24\n'
+                        'Movement.BadFallReset.Penalty=11\n')
+                cfg = runtime.settings(self.env(CORE_BROWSER_MOVEMENT_COMPILED=compiled,
+                                               REALM_BROWSER_MOVEMENT_ENABLE=enabled))
+                runtime.configure(cfg, root, templates)
+                text = (root/'config/anticheat.conf').read_text()
+                self.assertIn('Enable = '+enabled, text)
+                if enabled == '1':
+                    self.assertIn('Warden.Enable = 0', text)
+                    self.assertIn('Movement.Teleport.TickAction = 1', text)
+                    self.assertIn('Movement.BadFallReset.Penalty = 1', text)
+                self.assertNotIn('REALM_BROWSER_MOVEMENT_ENABLE', runtime.game_options(cfg)['env'])
 
     def test_test_bridge_enable_requires_bot_free_build_and_never_passes_live_secrets(self):
         for playerbots, ahbot in (('1','1'), ('0','1'), ('1','0')):
@@ -241,6 +269,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_schema_sql_does_not_elevate_normal_accounts(self):
         sql = runtime.security_sql(runtime.settings(self.env()))
+        self.assertEqual(sql.count("'Azeroth TEST PvP'"), 2)
         self.assertIn('gmlevel=3', sql)
         self.assertIn("WHERE username='REALMOPS'", sql)
         self.assertIn('icon=1', sql)

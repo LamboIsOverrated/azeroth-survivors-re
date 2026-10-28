@@ -25,7 +25,8 @@ CHILDREN = []
 def compiled_capabilities(env):
     capabilities = {}
     for name, default in [('CORE_PLAYERBOTS_COMPILED', '1'), ('CORE_AHBOT_COMPILED', '1'),
-                          ('REALM_BRIDGE_TEST_ENABLE', '0')]:
+                          ('REALM_BRIDGE_TEST_ENABLE', '0'), ('CORE_BROWSER_MOVEMENT_COMPILED', '0'),
+                          ('REALM_BROWSER_MOVEMENT_ENABLE', '0')]:
         value = env.get(name, default)
         if value not in ('0', '1'):
             raise ValueError(name + ' must be 0 or 1')
@@ -33,6 +34,8 @@ def compiled_capabilities(env):
     if capabilities['REALM_BRIDGE_TEST_ENABLE'] == '1' and any(
             capabilities[name] != '0' for name in ('CORE_PLAYERBOTS_COMPILED', 'CORE_AHBOT_COMPILED')):
         raise ValueError('REALM_BRIDGE_TEST_ENABLE requires a declared bot-free compiled build')
+    if capabilities['REALM_BROWSER_MOVEMENT_ENABLE'] == '1' and capabilities['CORE_BROWSER_MOVEMENT_COMPILED'] != '1':
+        raise ValueError('REALM_BROWSER_MOVEMENT_ENABLE requires a patched browser movement build')
     return capabilities
 
 
@@ -96,6 +99,19 @@ def configure(cfg, root, templates=Path('/opt/mangos/etc')):
         'aiplayerbot': {'AiPlayerbot.Enabled': 0, 'AiPlayerbot.MinRandomBots': 0, 'AiPlayerbot.MaxRandomBots': 0,
                        'AiPlayerbot.RandomBotAutologin': 0},
         'anticheat': {'Enable': 0}}
+    if capabilities['REALM_BROWSER_MOVEMENT_ENABLE'] == '1':
+        # Only the exact source carry can separate Warden from movement checks.
+        # Enforcement rejects packets; heuristic response rules never ban or kick.
+        anticheat = values['anticheat']
+        anticheat.update({'Enable': 1, 'Warden.Enable': 0, 'Antispam.Enable': 0,
+                          'Movement.SpeedHack.Enable': 1, 'Movement.UseExtrapolation': 0,
+                          'Movement.BadFallReset.Penalty': 1})
+        for detector in ('WallClimb', 'WaterWalk', 'SlowFall', 'FlyHack', 'Forbidden', 'MultiJump',
+                         'TimeBack', 'FastJump', 'JumpSpeedChange', 'NullClientTime', 'RootMove',
+                         'Explore', 'ExploreHigh', 'OverspeedZ', 'HeartbeatSkip', 'ClockDesync',
+                         'FakeTransport', 'TeleToTransport', 'Teleport', 'TeleportFar', 'FixedZ', 'BadOrderAck'):
+            for suffix, value in (('TickCount', 1), ('TickAction', 1), ('TotalCount', 0), ('TotalAction', 0)):
+                anticheat['Movement.' + detector + '.' + suffix] = value
     for flag, name in [('CORE_PLAYERBOTS_COMPILED', 'aiplayerbot'), ('CORE_AHBOT_COMPILED', 'ahbot')]:
         if capabilities[flag] == '0':
             del values[name]
@@ -165,8 +181,8 @@ UPDATE classicrealmd.account SET gmlevel=3,v='{verifier}',s='{salt}',sessionkey=
  WHERE username='{cfg['SOAP_ADMIN_USERNAME']}';
 INSERT IGNORE INTO classicrealmd.realmlist
  (id,name,address,port,icon,realmflags,timezone,allowedSecurityLevel,population,realmbuilds)
- VALUES (1,'Vanilla TEST PvP','{cfg['REALM_DOMAIN']}',8085,1,0,8,0,0,'5875');
-UPDATE classicrealmd.realmlist SET name='Vanilla TEST PvP',address='{cfg['REALM_DOMAIN']}',
+ VALUES (1,'Azeroth TEST PvP','{cfg['REALM_DOMAIN']}',8085,1,0,8,0,0,'5875');
+UPDATE classicrealmd.realmlist SET name='Azeroth TEST PvP',address='{cfg['REALM_DOMAIN']}',
  port=8085,icon=1,realmbuilds='5875',allowedSecurityLevel=0 WHERE id=1;
 """
 
