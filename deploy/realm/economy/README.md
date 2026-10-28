@@ -1,6 +1,6 @@
 # Realm TEST economy module
 
-Requires Node 24 and the dependencies from `deploy/realm/package-lock.json`. Run `npm ci --prefix deploy/realm` and `npm run build --prefix deploy/realm` from the repository root. Serve generated `public/realm-wallet.bundle.js` and `public/realm-wallet.bundle.css` at the corresponding root URLs; load the JS module on the authenticated `/play` page. The wallet panel only mounts on `/play`.
+Requires Node 24 and the dependencies from `deploy/realm/package-lock.json`. Run `npm ci --prefix deploy/realm` and `npm run build --prefix deploy/realm` from the repository root. Serve generated `public/realm-wallet.bundle.js` and `public/realm-wallet.bundle.css` at the corresponding root URLs; load the JS module on the authenticated `/play` page. The wallet panel mounts on both authenticated play routes, `/` and `/play`.
 
 ```js
 import {createEconomy} from '../economy/api.mjs';
@@ -28,3 +28,4 @@ Optional `getCharacters(req)` must fetch the realm's session-scoped `GET /api/ch
 Tests: `node --test deploy/realm/economy/tests/*.test.mjs`. They exercise real SQLite files, real Ed25519 signatures, restart/replay, account isolation, exact amounts, double spending, CSRF and closed launch paths. Read-only RPC tests inject the network response; no chain operation is sent during tests.
 
 API references: [Node 24 SQLite](https://nodejs.org/download/release/latest-v24.x/docs/api/sqlite.html), [Solana token accounts by owner](https://solana.com/docs/rpc/http/gettokenaccountsbyowner).
+

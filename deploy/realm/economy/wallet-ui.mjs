@@ -40,7 +40,7 @@ function formatAtoms(value, decimals) {
   return whole + (fraction ? `.${fraction}` : '');
 }
 
-if (location.pathname === '/play' && !document.querySelector('#realm-wallet-launcher')) {
+if (['/', '/play'].includes(location.pathname) && !document.querySelector('#realm-wallet-launcher')) {
   const styles = document.createElement('link'); styles.rel='stylesheet'; styles.href='/realm-wallet.bundle.css'; document.head.append(styles);
   const launcher = document.createElement('button'); launcher.id='realm-wallet-launcher'; launcher.textContent='Wallet · TEST';
   const dialog = document.createElement('dialog'); dialog.id='realm-wallet-dialog'; dialog.setAttribute('aria-labelledby','realm-wallet-title');

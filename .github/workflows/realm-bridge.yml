@@ -1,16 +1,13 @@
 name: realm-bridge-source
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/browser-pvp-mmo]
-    paths: ['deploy/realm/bridge/**', '.github/workflows/realm-bridge.yml']
   pull_request:
     paths: ['deploy/realm/bridge/**', '.github/workflows/realm-bridge.yml']
 permissions:
   contents: read
 concurrency:
   group: realm-bridge-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   pinned-core:
     runs-on: ubuntu-latest
@@ -23,14 +20,20 @@ jobs:
       - name: Install matching Debian core toolchain
         run: |
           apt-get update -qq
-          apt-get install -y --no-install-recommends build-essential cmake git ca-certificates libboost-all-dev libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev
+          apt-get install -y --no-install-recommends build-essential cmake ccache git ca-certificates libboost-all-dev libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: realm-core-de8f729-gcc12-v1-${{ github.sha }}
+          restore-keys: realm-core-de8f729-gcc12-v1-
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - name: Verify durable TEST outbox and C++ fault harness
         run: |
           npm ci --prefix deploy/realm
+          npm test --prefix deploy/realm
           node --test deploy/realm/bridge/tests/*.test.mjs
           g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test
           /tmp/world-bridge-test
@@ -44,6 +47,7 @@ jobs:
         run: |
           cmake -S /tmp/realm-core-source -B /tmp/realm-core-build \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/realm-core-install \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DBUILD_GAME_SERVER=ON -DBUILD_LOGIN_SERVER=ON -DBUILD_EXTRACTORS=OFF \
             -DBUILD_PLAYERBOTS=OFF -DBUILD_AHBOT=OFF -DPCH=ON
           cmake --build /tmp/realm-core-build --target mangosd realmd -j2
