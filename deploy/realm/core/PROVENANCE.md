@@ -1,0 +1,28 @@
+# Private Classic core image
+
+The runtime extends the public companion image pinned in `upstreams.env`. The
+registry OCI index, amd64 manifest and image config were read on 2026-10-28.
+The config labels identify companion revision `b56f79bf699c874c14d8c16423eda4220f05f76e`
+and Classic DB revision `4d230bb1bd477948cac61c107d2718b3ea04a5b8`.
+The companion's [exact upstream pins](https://github.com/Arnesen/wenilla-realm/blob/b56f79bf699c874c14d8c16423eda4220f05f76e/upstreams.env)
+identify the core and PlayerBots revisions recorded alongside the digest.
+Its [source build recipe](https://github.com/Arnesen/wenilla-realm/blob/b56f79bf699c874c14d8c16423eda4220f05f76e/docker/mangos.Dockerfile)
+builds unpatched CMaNGOS, PlayerBots and extractors and carries the SQL and Classic
+DB installer. The pinned companion checkout plus those exact build arguments
+reproduce its source inputs; Debian package repositories are not snapshot-pinned,
+so a rebuilt source image is not claimed to have an identical digest.
+
+CMaNGOS Classic is GPL-2.0-or-later; Classic DB is GPL-3.0-or-later; the companion
+is MIT. Preserve their license files and supply the corresponding source when
+redistributing binaries. The base's auto-generated OCI license label says
+NOASSERTION, which does not replace upstream licenses. Source links:
+
+- [CMaNGOS exact source](https://github.com/cmangos/mangos-classic/tree/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce)
+- [Classic DB exact source and installer](https://github.com/cmangos/classic-db/tree/4d230bb1bd477948cac61c107d2718b3ea04a5b8)
+- [PlayerBots exact source](https://github.com/cmangos/playerbots/tree/31e0f32b543fee46941db51225bb7b432eace236)
+- [SRP6 calculation](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/src/shared/Auth/SRP6.cpp)
+- [Extractor command reference](https://github.com/cmangos/mangos-classic/blob/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce/contrib/extractor_scripts/ExtractResources.sh)
+
+No game-install assets, extracted server assets, accounts or secrets are included
+in this repository or image. Runtime data comes only from the operator's private
+compatible Vanilla 1.12.1/build-5875 client input.
