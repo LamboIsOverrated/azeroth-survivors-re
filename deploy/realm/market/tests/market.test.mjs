@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer,request as httpRequest } from 'node:http';
 import { Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { createMarket } from '../index.mjs';
 import {routeFixture} from './route-fixture.mjs';
@@ -49,7 +49,10 @@ async function fixture(t, {env={},account=mintAccount(),genesis=GENESIS,quote={}
   const handler=createMarket({env:{PUBLIC_ORIGIN:ORIGIN,ECONOMY_TOKEN_MINT:mint,ECONOMY_SOLANA_RPC_URL:'https://rpc.example/',TOKEN_LAUNCHED:'true',SWAPS_ENABLED:'true',...env},identity:async req=>req.headers.cookie?.includes('noauth')?null:({id:req.headers['x-test-user']??'7',username:'player'}),resolveWallet:async()=>linked,fetchImpl,now:()=>clock});
   const server=createServer(async(req,res)=>{if(!await handler(req,res)){res.writeHead(404);res.end('{}');}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const request=async(path='/config',body,headers={})=>{const response=await fetch(`http://127.0.0.1:${server.address().port}/api/market${path}`,{method:body===undefined?'GET':'POST',headers:{cookie:'session=fixture',...(body===undefined?{}:{origin:ORIGIN,'content-type':'application/json','x-realm-market':'1'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:response.status,body:await response.json()};};
+  // Native HTTP avoids WHATWG fetch's forbidden-port list for OS-assigned test ports.
+  const request=(path='/config',body,headers={})=>new Promise((resolve,reject)=>{
+    const req=httpRequest({hostname:'127.0.0.1',port:server.address().port,path:`/api/market${path}`,method:body===undefined?'GET':'POST',headers:{cookie:'session=fixture',...(body===undefined?{}:{origin:ORIGIN,'content-type':'application/json','x-realm-market':'1'}),...headers}},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>{try {resolve({status:res.statusCode,body:JSON.parse(Buffer.concat(chunks).toString('utf8'))});} catch(error) {reject(error);}});});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));
+  });
   return {request,requests,get executes(){return executes;},advance:ms=>clock+=ms,setWallet:value=>linked=value};
 }
 
