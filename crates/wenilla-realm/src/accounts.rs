@@ -60,10 +60,10 @@ pub async fn provision_as(
     let pass = random_string(ALNUM_UPPER, MAX_ACCOUNT_STR);
     match soap.exec(&format!("account create {name} {pass}")).await {
         Ok(_) => {}
-        // A row we lost track of (restored sqlite, say): take it over by resetting its password.
+        // Missing web state does not prove ownership of an existing game account. Restore
+        // the matching state backup or resolve the collision explicitly; never take it over.
         Err(SoapError::Fault(m)) if m.contains("already exist") => {
-            soap.exec(&format!("account set password {name} {pass} {pass}"))
-                .await?;
+            return Err(anyhow!("game account already exists without a web ownership record; restore account state before provisioning"));
         }
         Err(e) => return Err(e.into()),
     }
@@ -221,4 +221,60 @@ pub async fn bootstrap_console(soap: &Client) -> Result<(String, String)> {
         }
     }
     Ok((user, pass))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn an_unknown_existing_game_account_is_never_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open_sqlite(&dir.path().join("realm.sqlite"))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id, username, display_name, role, created_at) VALUES (1,'test','Test','player',0)").execute(&db).await.unwrap();
+        let commands: Arc<Mutex<Vec<String>>> = Arc::default();
+        let seen = Arc::clone(&commands);
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |body: String| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    let collision = body.contains("account create");
+                    seen.lock().unwrap().push(body);
+                    if collision {
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "<faultstring>account already exists</faultstring>",
+                        )
+                    } else {
+                        (axum::http::StatusCode::OK, "<result>ok</result>")
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let soap = Client::new(
+            &format!("http://{}/", listener.local_addr().unwrap()),
+            "console",
+            "mock-secret",
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let result = provision(&db, &soap, &Keyring::from_bytes(&[7; 32]), 1).await;
+        assert!(
+            result.is_err(),
+            "unknown game accounts require explicit operator recovery"
+        );
+        assert!(get(&db, 1).await.unwrap().is_none());
+        assert_eq!(
+            commands.lock().unwrap().len(),
+            1,
+            "no password reset command may run"
+        );
+        task.abort();
+    }
 }

@@ -46,3 +46,10 @@ Browser builds: `WEB_VARIANT=mmo scripts/web-build.sh` produces `web/dist` from
 `web/dist-survivors` from `wenilla-survivors` (`run_survivors`). `WEB_DIST` overrides
 the output folder when packaging the separate preview. Both emit the stable
 `wenilla.js` / `wenilla_bg.wasm` names expected by their own pages.
+
+Active relays revalidate the stable session ID and session nonce every 15 seconds,
+with a five-second lookup deadline. Logout, disabled/expired sessions and database
+errors close both transports within at most about 20 seconds. Cookie rotation
+preserves the session identity. Provisioning refuses unknown existing core
+accounts; restore matching web state or recover them explicitly rather than
+silently resetting their password and claiming ownership.

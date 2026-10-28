@@ -66,10 +66,54 @@ async fn upgrade(
     };
     ws.max_message_size(65536)
         .on_upgrade(move |socket| async move {
-            if let Err(error) = relay(socket, &upstream, port, &account).await {
+            let result = tokio::select! {
+                result = relay(socket, &upstream, port, &account) => result,
+                result = revoked(&state.db, &session) => result,
+            };
+            if let Err(error) = result {
                 tracing::warn!(%error, port, "account-bound relay ended");
             }
         })
+}
+
+async fn revoked(db: &sqlx::SqlitePool, session: &Session) -> anyhow::Result<()> {
+    let mut checks = tokio::time::interval(std::time::Duration::from_secs(15));
+    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        checks.tick().await;
+        let valid = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::session::still_valid(db, session.id, session.user.id, &session.csrf_token),
+        )
+        .await??;
+        if !valid {
+            anyhow::bail!("web session revoked, disabled or expired");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn established_socket_monitor_notices_revocation_without_client_traffic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::open_sqlite(&dir.path().join("realm.sqlite"))
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id, username, display_name, role, created_at) VALUES (1,'test','Test','player',0)").execute(&db).await.unwrap();
+        let token = crate::session::create(&db, 1, None, None).await.unwrap();
+        let session = crate::session::lookup(&db, &token).await.unwrap().unwrap();
+        let watched_db = db.clone();
+        let watching = tokio::spawn(async move { super::revoked(&watched_db, &session).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!watching.is_finished(), "a valid session must keep playing");
+        crate::session::delete_by_token(&db, &token).await.unwrap();
+        let monitor = tokio::time::timeout(std::time::Duration::from_secs(21), watching).await;
+        assert!(
+            monitor.is_ok_and(|result| result.is_ok_and(|session| session.is_err())),
+            "monitor must close a revoked socket even if no game bytes arrive"
+        );
+    }
 }
 
 async fn relay(ws: WebSocket, upstream: &str, port: u16, account: &str) -> anyhow::Result<()> {

@@ -125,6 +125,23 @@ pub async fn delete_for_user(db: &SqlitePool, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Validate an established socket by stable session identity, independent of cookie rotation.
+pub async fn still_valid(db: &SqlitePool, id: i64, user_id: i64, csrf_token: &str) -> Result<bool> {
+    // The nonce is stable across cookie rotation and unique when SQLite reuses a deleted id.
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id \
+         LEFT JOIN local_credentials c ON c.user_id = u.id \
+         WHERE s.id = ? AND s.user_id = ? AND s.csrf_token = ? AND s.expires_at > ? \
+         AND u.disabled = 0 AND COALESCE(c.must_change, 0) = 0)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(csrf_token)
+    .bind(now())
+    .fetch_one(db)
+    .await?)
+}
+
 /// Resolve a cookie token to a live session, touching/rotating it as a side effect.
 pub async fn lookup(db: &SqlitePool, token: &str) -> Result<Option<Session>> {
     let t = now();

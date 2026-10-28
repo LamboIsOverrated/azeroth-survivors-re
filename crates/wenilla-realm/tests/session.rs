@@ -62,3 +62,91 @@ async fn logout_with_previous_cookie_revokes_rotated_session() {
     session::delete_by_token(&pool, &old).await.unwrap();
     assert!(session::lookup(&pool, &fresh).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn socket_session_validation_survives_rotation_and_refuses_revocation() {
+    let d = tempfile::tempdir().unwrap();
+    let pool = wenilla_realm::db::open_sqlite(&d.path().join("realm.sqlite"))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO users (id,username,display_name,role,created_at) VALUES (1,'test','Test','player',0)").execute(&pool).await.unwrap();
+    let token = wenilla_realm::session::create(&pool, 1, None, None)
+        .await
+        .unwrap();
+    let session = wenilla_realm::session::lookup(&pool, &token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        wenilla_realm::session::still_valid(&pool, session.id, 1, &session.csrf_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE sessions SET rotated_at=0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rotated = wenilla_realm::session::lookup(&pool, &token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rotated.fresh_token.is_some());
+    assert!(
+        wenilla_realm::session::still_valid(&pool, session.id, 1, &session.csrf_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE users SET disabled=1 WHERE id=1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !wenilla_realm::session::still_valid(&pool, session.id, 1, &session.csrf_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE users SET disabled=0 WHERE id=1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sessions SET expires_at=0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !wenilla_realm::session::still_valid(&pool, session.id, 1, &session.csrf_token)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE sessions SET expires_at=?")
+        .bind(wenilla_realm::db::now() + 600)
+        .execute(&pool)
+        .await
+        .unwrap();
+    wenilla_realm::session::delete_by_token(&pool, &rotated.fresh_token.unwrap())
+        .await
+        .unwrap();
+    assert!(
+        !wenilla_realm::session::still_valid(&pool, session.id, 1, &session.csrf_token)
+            .await
+            .unwrap()
+    );
+    let other = wenilla_realm::session::create(&pool, 1, None, None)
+        .await
+        .unwrap();
+    let other = wenilla_realm::session::lookup(&pool, &other)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        wenilla_realm::session::still_valid(&pool, other.id, 1, &other.csrf_token)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !wenilla_realm::session::still_valid(&pool, other.id, 1, &session.csrf_token)
+            .await
+            .unwrap(),
+        "a deleted id reused by SQLite must not revive a stale socket"
+    );
+}
