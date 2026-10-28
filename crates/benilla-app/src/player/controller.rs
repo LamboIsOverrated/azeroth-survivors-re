@@ -304,6 +304,17 @@ pub(super) fn control(
             .map(|(_, t, ..)| (t.translation, server_ride::yaw_of(t.rotation))),
     );
 
+    // world_focus continues terrain/transfer loading while we await the actual claimed body.
+    // No movement packet or acknowledgement may fabricate a pose during that handshake.
+    #[cfg(target_arch = "wasm32")]
+    if player.browser_movement.recovering()
+        || !player
+            .browser_entry
+            .can_report(player.foreign_mover.or(self_guid))
+    {
+        return;
+    }
+
     let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
 
     // On a transport, recompose the rider from the deck's pose this frame, before input integrates.

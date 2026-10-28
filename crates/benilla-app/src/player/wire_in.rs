@@ -36,6 +36,7 @@ enum ControlVerdict {
 }
 
 /// The pitch a login opens at when no saved camera pose names one.
+#[cfg(not(target_arch = "wasm32"))]
 const LOGIN_PITCH: f32 = -0.45;
 
 /// Give our own body back on a hand-over: the stop, then `CMSG_MOVE_NOT_ACTIVE_MOVER` (`0x2D1`).
@@ -49,6 +50,13 @@ const LOGIN_PITCH: f32 = -0.45;
 /// map change (`MovementHandler.cpp:295-296`, `Map.cpp:448`). Skipped while a server spline owns
 /// the body, as in the reference (`0x619d50`).
 fn yield_own_body(net_cmds: &NetCommands, player: &mut Player, self_guid: Option<u64>) {
+    #[cfg(target_arch = "wasm32")]
+    if !player
+        .browser_entry
+        .can_report(player.foreign_mover.or(self_guid))
+    {
+        return;
+    }
     movement_net::park_mover(&net_cmds.0, player);
     let Some(me) = self_guid else { return };
     if player.server_riding {
@@ -99,6 +107,8 @@ pub(super) fn apply_server_moves(
     >,
     self_pose: Option<(Vec3, f32)>,
 ) -> Vec<SpeedChangeMessage> {
+    #[cfg(target_arch = "wasm32")]
+    player.browser_entry.controls_applied();
     // A grant must be claimed: vmangos drops every `MSG_MOVE_*` for an unconfirmed mover
     // (`MovementHandler.cpp:291-293`, `Player.cpp:20257-20272`).
     for c in control_msgs.read() {
@@ -107,6 +117,14 @@ pub(super) fn apply_server_moves(
             // not changed hands, and `CMSG_MOVE_NOT_ACTIVE_MOVER` would strand us.
             ControlVerdict::Revoked => {
                 player.control_lost = true;
+                #[cfg(target_arch = "wasm32")]
+                if player
+                    .browser_entry
+                    .can_report(player.foreign_mover.or(self_guid))
+                {
+                    movement_net::park_mover(&net_cmds.0, player);
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 movement_net::park_mover(&net_cmds.0, player);
             }
             ControlVerdict::Restored => {
@@ -118,6 +136,13 @@ pub(super) fn apply_server_moves(
                 // mismatch to us (`Player.cpp:20267-20269`), so a parting stop for the creature
                 // would move our own character to it.
                 super::move_trace::mover_claim("SET_ACTIVE_MOVER", c.mover);
+                #[cfg(target_arch = "wasm32")]
+                if player.browser_entry.control_claim(c.mover) {
+                    let _ = net_cmds
+                        .0
+                        .send(ClientCommand::SetActiveMover { guid: c.mover });
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 let _ = net_cmds
                     .0
                     .send(ClientCommand::SetActiveMover { guid: c.mover });
@@ -135,6 +160,11 @@ pub(super) fn apply_server_moves(
                 player.foreign_mover = Some(guid);
                 player.reseat = true;
                 super::move_trace::mover_claim("SET_ACTIVE_MOVER", guid);
+                #[cfg(target_arch = "wasm32")]
+                if player.browser_entry.control_claim(guid) {
+                    let _ = net_cmds.0.send(ClientCommand::SetActiveMover { guid });
+                }
+                #[cfg(not(target_arch = "wasm32"))]
                 let _ = net_cmds.0.send(ClientCommand::SetActiveMover { guid });
             }
             // vmangos sends this on unpossess, after `Restored`, and when the possessed unit is
@@ -148,6 +178,13 @@ pub(super) fn apply_server_moves(
             }
         }
     }
+    // The first browser ack needs the verified body's pose. The old Embodied marker can still
+    // name the prior body during a control handoff; never clear reseat from that pose.
+    #[cfg(target_arch = "wasm32")]
+    if super::browser_entry::seize_verified(player, cam, time, self_guid, self_pose) {
+        player.browser_entry.defer_for_classification();
+    }
+
     // Cross-map worldport: snap, bump `CurrentMap` for the terrain streamer, ack if required.
     for w in worldports.read() {
         let riding = w.transport_entry.is_some() && player.ride.is_some();
@@ -172,7 +209,20 @@ pub(super) fn apply_server_moves(
             }
         } else {
             // No transport carried through: a world pose, and any ride is stale.
-            player.ride = None;
+            #[cfg(target_arch = "wasm32")]
+            let verified_initial_ride = !w.needs_ack
+                && player
+                    .browser_entry
+                    .can_report(player.foreign_mover.or(self_guid))
+                && player.ride.is_some();
+            #[cfg(target_arch = "wasm32")]
+            if !verified_initial_ride {
+                player.ride = None;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                player.ride = None;
+            }
             player.pos = wow_to_bevy(w.position);
             player.face_yaw = w.orientation;
             player.model_yaw = w.orientation; // the body snaps too, no chase
@@ -182,6 +232,22 @@ pub(super) fn apply_server_moves(
             player.settle_deadline = time.elapsed_secs() + SETTLE_TIMEOUT;
             // The physics world is still the old map's until the streamer swaps it.
             player.world_stale = true;
+        }
+        // Initial LOGIN_VERIFY_WORLD can contain deck-local coordinates without a preceding
+        // TRANSFER_PENDING. Native's later seizing adopts the actual self create's world pose;
+        // the browser already seated it before spline classification, so retain that truth.
+        #[cfg(target_arch = "wasm32")]
+        if let Some((pos, yaw)) = super::browser_entry_state::initial_body_pose(
+            w.needs_ack,
+            player
+                .browser_entry
+                .matches_body(player.foreign_mover.or(self_guid)),
+            self_pose,
+        ) {
+            player.pos = pos;
+            player.face_yaw = yaw;
+            player.model_yaw = yaw;
+            cam.yaw = yaw;
         }
         player.move_flags = 0;
         player.airborne_since = None; // a snap ends any jump arc (no phantom FALL_LAND)
@@ -229,6 +295,11 @@ pub(super) fn apply_server_moves(
         }
     }
 
+    // The deck tick precedes Input. Recompose before any mode ACK snapshots its world pose and
+    // local facing; the controller's later carry sees the same boat_yaw and is idempotent.
+    #[cfg(target_arch = "wasm32")]
+    super::ride::carry(player, cam, transports);
+
     // The acked modes: apply to our state first, then ack with the flags it rebuilds to, as the
     // reference does. vmangos kicks a root apply-ack without `MOVEFLAG_ROOT`, or defers the root to
     // landing when the ack carries `JUMPING` or `FALLINGFAR` (`MovementHandler.cpp:715-729`).
@@ -236,7 +307,20 @@ pub(super) fn apply_server_moves(
     // Root also parks the walk stream and ends the arc, as the reference's `SetRoot` (`0x7c7340`)
     // clears the direction bits and stops the fall (`0x7c6290`); moving bits beside ROOT freeze
     // the reference and raise vmangos's `CHEAT_TYPE_ROOT_MOVE`. Turn bits are not moving bits.
-    for m in mode_msgs.read() {
+    #[cfg(target_arch = "wasm32")]
+    let mover_guid = player.foreign_mover.or(self_guid);
+    #[cfg(target_arch = "wasm32")]
+    let report_ready = player.browser_entry.can_report(mover_guid);
+    #[cfg(target_arch = "wasm32")]
+    let mode_batch = player
+        .browser_entry
+        .modes
+        .take_when_ready(report_ready, mode_msgs.read().copied());
+    #[cfg(target_arch = "wasm32")]
+    let modes = mode_batch.iter().filter(|m| Some(m.guid) == mover_guid);
+    #[cfg(not(target_arch = "wasm32"))]
+    let modes = mode_msgs.read();
+    for m in modes {
         player.modes.set(m.mode, m.apply);
         if m.mode == MoveMode::Root && m.apply {
             #[cfg(not(target_arch = "wasm32"))]
@@ -285,7 +369,31 @@ pub(super) fn apply_server_moves(
     //
     // Two in one frame collapse to the last, where the reference queues both: the motion is the
     // same, as `0x6179c0` replaces the velocity, but the first ack is lost (`OnFailedToAckChange`).
-    for k in knock_msgs.read() {
+    #[cfg(target_arch = "wasm32")]
+    let knock_batch = player.browser_entry.knocks.take_when_fresh(
+        report_ready,
+        knock_msgs
+            .read()
+            .map(|k| (*k, bevy::platform::time::Instant::now())),
+        |(k, received)| {
+            Some(k.guid) != mover_guid
+                || received.elapsed() <= std::time::Duration::from_millis(1500)
+        },
+    );
+    #[cfg(target_arch = "wasm32")]
+    let Ok(knock_batch) = knock_batch
+    else {
+        super::browser_reentry(player);
+        return Vec::new();
+    };
+    #[cfg(target_arch = "wasm32")]
+    let knocks = knock_batch
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| Some(k.guid) == mover_guid);
+    #[cfg(not(target_arch = "wasm32"))]
+    let knocks = knock_msgs.read();
+    for k in knocks {
         player.knockback = Some(super::state::PendingKnockback {
             guid: k.guid,
             counter: k.counter,
@@ -295,7 +403,9 @@ pub(super) fn apply_server_moves(
 
     // Take control when the server first reports our position, and again on a mover change; only
     // the login (`first`) settles, flags a stale world and seats the camera.
+    #[cfg(not(target_arch = "wasm32"))]
     let seizing = !player.active || player.reseat;
+    #[cfg(not(target_arch = "wasm32"))]
     if seizing {
         if let Some((pos, yaw)) = self_pose {
             let first = !player.active;
@@ -350,6 +460,15 @@ pub(super) fn apply_server_moves(
     // Forced speed changes: the bridge applied the speed; the ack carries our wire state, which the
     // server relocates us to. Controlled, the movement stream acks; otherwise our state is the
     // parked pose, so ack here.
+    #[cfg(target_arch = "wasm32")]
+    let speed_acks: Vec<SpeedChangeMessage> = player
+        .browser_entry
+        .speeds
+        .take_when_ready(report_ready, speed_msgs.read().copied())
+        .into_iter()
+        .filter(|ack| Some(ack.guid) == mover_guid)
+        .collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let speed_acks: Vec<SpeedChangeMessage> = speed_msgs.read().copied().collect();
     if !player.active || player.detached {
         for ack in &speed_acks {

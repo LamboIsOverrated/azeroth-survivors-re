@@ -97,6 +97,14 @@ impl Plugin for NetPlugin {
                 .chain()
                 .in_set(WorldStage::Net)
                 .before(apply_net_updates),
+        )
+        .add_systems(
+            Update,
+            // Flush the qualified mover claim and its responses before terrain streaming can
+            // block the main thread. Keep the pre-Net pump and its pause fence unchanged.
+            web_writer_pump
+                .after(WorldStage::Input)
+                .before(WorldStage::Stream),
         );
         // In the net stage: the lighting resolve runs after it and reads this frame's clock.
         app.add_systems(
@@ -2264,6 +2272,7 @@ pub(crate) struct ClientControlMessage {
 /// `SMSG_FORCE_*_SPEED_CHANGE` for our mover; the controller answers
 /// [`ClientCommand::ForceSpeedAck`] with its live pose.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct SpeedChangeMessage {
     pub(crate) guid: u64,
     pub(crate) kind: SpeedKind,
@@ -2274,6 +2283,7 @@ pub(crate) struct SpeedChangeMessage {
 /// Root, water-walk, feather-fall or hover granted or revoked on our mover: the server's
 /// `IsFlagAckOpcode` set. The controller acks with its live pose.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct MoveModeMessage {
     /// Our mover's guid, echoed in the ack.
     pub(crate) guid: u64,
@@ -2284,6 +2294,7 @@ pub(crate) struct MoveModeMessage {
 
 /// `SMSG_MOVE_KNOCK_BACK` at our mover; the controller launches and acks.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct KnockBackMessage {
     /// Our mover's guid, echoed in the ack as a full u64.
     pub(crate) guid: u64,

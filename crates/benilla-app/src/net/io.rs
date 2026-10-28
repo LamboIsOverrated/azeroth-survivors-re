@@ -719,6 +719,9 @@ async fn run(
             .map(|c| c.name.clone())
             .unwrap_or_default();
         session.player_login_async(refuse_once(guid)).await?;
+        // CMaNGOS rejects this before AddToWorld. The browser claims after its matching self
+        // create in player::browser_entry; native/reference retains its existing handshake.
+        #[cfg(not(target_arch = "wasm32"))]
         session.set_active_mover_async(guid).await?;
 
         let billing_time_rested = session.billing_time_rested();
