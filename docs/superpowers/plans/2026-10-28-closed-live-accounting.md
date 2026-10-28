@@ -52,4 +52,3 @@ Files: same kernel/store plus `accounting/tests/process-worker.mjs`, README and 
 - [ ] Obtain fresh independent review before integration.
 
 Verification: 20 closed accounting tests plus 9 existing TEST bridge tests pass under Node24. Tests include exact signed fixture proofs, invalid proof gating, dedicated-database/schema refusal, append-only double entry, restart/lost acknowledgement recovery, funded rewards and two OS processes competing for backing. No public routes or runtime imports were added. Independent review and actual LIVE world/custody integrations remain pending.
-
