@@ -1,0 +1,94 @@
+name: browser-mmo
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/browser-pvp-mmo]
+    paths: ['crates/wenilla/**', 'crates/wenilla-realm/**', 'Cargo.lock', '.github/workflows/realm.yml']
+  pull_request:
+    paths:
+      - 'deploy/realm/**'
+      - 'crates/wenilla-realm/**'
+      - 'crates/wenilla/**'
+      - '.github/workflows/realm.yml'
+permissions:
+  contents: read
+concurrency:
+  group: browser-mmo-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+jobs:
+  realm-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: realm
+      - run: npm ci
+        working-directory: deploy
+      - name: gateway and economy checks
+        run: |
+          npm test --prefix deploy
+          node --test deploy/realm/web/tests/*.test.mjs deploy/realm/economy/tests/*.test.mjs
+          python3 -m unittest discover -s deploy/realm/core -p 'test_*.py' -v
+          python3 -m unittest discover -s deploy/realm/web/tests -p 'test_*.py' -v
+      - name: realm account and relay checks
+        run: cargo test --locked -p wenilla-realm
+      - name: realm formatting
+        run: cargo fmt -p wenilla-realm -p wenilla -- --check
+  build-mmo:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container: rust:1.98.1-bookworm
+    timeout-minutes: 100
+    permissions:
+      contents: write
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mmo-release
+          cache-directories: tools
+      - name: Linux client dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends clang cmake pkg-config python3 brotli gh libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: native realm verification in the runtime ABI
+        run: cargo test --locked -p wenilla-realm
+      - name: browser toolchain
+        run: scripts/web-setup.sh
+      - name: build original MMO browser client and account server
+        run: |
+          scripts/web-build.sh
+          cargo build --locked --release -p wenilla-realm
+      - name: package source-pinned runtime without game data
+        run: |
+          mkdir -p engine/bin engine/www
+          cp -a web/dist/. engine/www/
+          cp target/release/wenilla-realm engine/bin/
+          cp LICENSE-MIT LICENSE-APACHE engine/
+          printf '%s\n' "$GITHUB_SHA" > engine/SOURCE_COMMIT
+          # Keep compressed WASM once; the web runtime restores its raw fallback.
+          test -s engine/www/wenilla_bg.wasm.br
+          rm -f engine/www/wenilla_bg.wasm engine/www/wenilla_bg.wasm.gz
+          tar -czf mmo-runtime.tar.gz -C engine .
+          sha256sum mmo-runtime.tar.gz > mmo-runtime.tar.gz.sha256
+      - name: publish reviewable versioned runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="mmo-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}"
+          printf 'Original Classic browser client and account service. Source commit: %s. No game assets, accounts, or secrets. MIT/Apache licenses included.\n' "$GITHUB_SHA" > release-notes.txt
+          gh release create "$tag" mmo-runtime.tar.gz mmo-runtime.tar.gz.sha256 --target "$GITHUB_SHA" --title "Browser MMO runtime ${GITHUB_SHA:0:12}" --notes-file release-notes.txt --prerelease
+          printf 'Runtime tag: %s\n\n' "$tag" >> "$GITHUB_STEP_SUMMARY"
+          cat mmo-runtime.tar.gz.sha256 >> "$GITHUB_STEP_SUMMARY"
