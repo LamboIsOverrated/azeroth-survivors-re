@@ -101,10 +101,7 @@ pub(super) fn apply_server_moves(
     self_moves: &mut MessageReader<SelfMoveMessage>,
     control_msgs: &mut MessageReader<ClientControlMessage>,
     self_guid: Option<u64>,
-    transports: &Query<
-        (&Transform, &Guid, Option<&avian3d::prelude::ColliderAabb>),
-        (With<Transport>, Without<Embodied>, Without<FlyCam>),
-    >,
+    transports: &super::TransportQuery,
     self_pose: Option<(Vec3, f32)>,
 ) -> Vec<SpeedChangeMessage> {
     #[cfg(target_arch = "wasm32")]
