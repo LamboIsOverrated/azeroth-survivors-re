@@ -598,6 +598,7 @@ struct Run {
     knockback: Option<KnockbackReceipt>,
     terrain: Option<phases::TerrainGrid>,
     health: phases::HealthGuard,
+    initial_run_speed: Option<f32>,
     teleport: Option<TeleportReceipt>,
     capture: Option<observe::Capture>,
 }
@@ -660,6 +661,17 @@ impl Run {
                 }
             }
             let primary_guid = self.peers[0].guid;
+            if let SessionEvent::ObjectCreate {
+                guid,
+                speeds: Some(speeds),
+                ..
+            } = &event
+            {
+                if side == 0 && *guid == primary_guid && self.initial_run_speed.is_none() {
+                    self.initial_run_speed = Some(speeds.run);
+                    self.evidence.write(json!({"event":"initial-self-run-speed","guid":guid,"run_speed":speeds.run}))?;
+                }
+            }
             let fields = match &event {
                 SessionEvent::ObjectCreate { guid, fields, .. }
                 | SessionEvent::ObjectValues { guid, fields }
@@ -1189,6 +1201,7 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         knockback: None,
         terrain: f.terrain.clone(),
         health: Default::default(),
+        initial_run_speed: None,
         teleport: None,
         capture: f.observation.as_ref().map(|o| observe::Capture {
             guid: o.guid,
@@ -1204,6 +1217,9 @@ fn execute(f: &Fixture, raw: &[u8], output: &Path, mode: Mode) -> Result<()> {
         run.health.baseline[0] == Some(60),
         "initial self health60 must be received before actions"
     );
+    if f.steps.iter().any(|s| s.await_run_speed.is_some()) {
+        phases::require_initial_run_speed(run.initial_run_speed)?;
+    }
     ensure!(
         distance(run.peers[0].pose, f.origin) < 0.1
             && (run.peers.len() == 1 || distance(run.peers[1].pose, f.origin) < 20.),

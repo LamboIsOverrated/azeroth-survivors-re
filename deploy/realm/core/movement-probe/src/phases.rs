@@ -35,6 +35,13 @@ impl HealthGuard {
 pub fn speed_matches(expected: f32, actual: f32) -> bool {
     expected.is_finite() && actual.is_finite() && (expected - actual).abs() <= 0.01
 }
+pub fn require_initial_run_speed(speed: Option<f32>) -> Result<()> {
+    ensure!(
+        speed.is_some_and(|v| speed_matches(7., v)),
+        "initial native run speed must be7 before speed actions"
+    );
+    Ok(())
+}
 
 pub fn matches_destination(expected: [f32; 3], actual: [f32; 3]) -> bool {
     expected.iter().chain(actual.iter()).all(|p| p.is_finite())
@@ -229,6 +236,13 @@ mod tests {
         assert!(speed_matches(14., 14.));
         assert!(!speed_matches(14., 7.));
         assert!(!speed_matches(14., f32::NAN));
+    }
+    #[test]
+    fn speed_phase_relogin_requires_actual_native_normal_run_speed() {
+        require_initial_run_speed(Some(7.)).unwrap();
+        for speed in [None, Some(14.), Some(0.), Some(f32::NAN)] {
+            assert!(require_initial_run_speed(speed).is_err());
+        }
     }
     #[test]
     fn only_the_expected_finite_server_destination_matches() {

@@ -204,6 +204,9 @@ For an unmodified level-one avatar these run speeds are 14 and 7. The probe ACKs
 each actual force-change packet's kind, counter and exact speed. Completion
 requires the observer's corresponding run-speed relay after that ACK, not just
 the server's request. Received counters, ACK poses and observer poses are logged.
+Before a speed phase, the actual self create's native run-speed field must be
+received and equal seven; `initial-self-run-speed` records it. A stale runtime
+speed or missing create field stops before the attended action prompt.
 
 If the server teleported the avatar into a drop, speed ACKs use the current
 receipt-clock fall position and preserve falling flags/tail. `above_floor: true`
