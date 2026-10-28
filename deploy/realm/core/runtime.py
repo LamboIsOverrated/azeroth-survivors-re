@@ -275,6 +275,29 @@ def listening(port):
         return False
 
 
+def game_options(env):
+    # Game parsers only need their own runtime configuration. Never inherit
+    # migration, web database, SOAP operator or unrelated deployment secrets.
+    clean = {key: env[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ', 'LD_LIBRARY_PATH') if key in env}
+    clean['HOME'] = '/home/mangos'
+    return dict(env=clean, user=10001, group=10001, extra_groups=[], start_new_session=True)
+
+
+def prepare_game_permissions(root):
+    # Extractor outputs use umask 022 and remain read-only to the game. Only
+    # configuration and log paths require targeted ownership/mode changes.
+    os.chown(root, 0, 10001)
+    root.chmod(0o750)
+    directory = root / 'config'
+    os.chown(directory, 0, 10001)
+    directory.chmod(0o750)
+    for path in directory.glob('*.conf'):
+        os.chown(path, 0, 10001)
+        path.chmod(0o640)
+    os.chown(root / 'logs', 10001, 10001)
+    (root / 'logs').chmod(0o750)
+
+
 class Status(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path not in ('/healthz', '/readyz', '/status'):
@@ -291,6 +314,7 @@ class Status(BaseHTTPRequestHandler):
 
 
 def main():
+    os.umask(0o022)
     cfg = settings(os.environ)
     root = Path('/realm-data')
     root.mkdir(parents=True, exist_ok=True)
@@ -328,10 +352,11 @@ def main():
             return
         STATE['data'] = True
         STATE['phase'] = 'world-starting'
+        prepare_game_permissions(root)
         for command in [['/opt/mangos/bin/realmd', '-c', str(root / 'config/realmd.conf')],
                         ['/opt/mangos/bin/mangosd', '-c', str(root / 'config/mangosd.conf'),
                          '-a', str(root / 'config/ahbot.conf'), '-p', str(root / 'config/aiplayerbot.conf')]]:
-            CHILDREN.append(subprocess.Popen(command, cwd='/opt/mangos/bin', start_new_session=True))
+            CHILDREN.append(subprocess.Popen(command, cwd='/opt/mangos/bin', **game_options(os.environ)))
         while not STOP.wait(2):
             if any(p.poll() is not None for p in CHILDREN):
                 raise RuntimeError('core child exited; terminating sibling for clean restart')

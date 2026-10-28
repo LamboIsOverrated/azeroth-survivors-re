@@ -26,7 +26,10 @@ anti-cheat is disabled; no redeemable reward economy is enabled by this package.
 
 The default command is `serve`. It waits for MariaDB, installs the pinned Classic
 DB only when **every** target schema has zero tables, reapplies scoped runtime
-grants and PvP realm metadata, then waits for extraction. Existing healthy
+grants and PvP realm metadata, then waits for extraction. Game listeners run as
+the image's mangos UID/GID 10001 with a minimal environment containing no database
+or operator secrets; generated core configuration supplies its scoped SQL login.
+Only configuration/log permissions are adjusted before launch. Existing healthy
 databases are preserved. A partial/interrupted schema fails closed and requires
 private operator repair/restore; it is never automatically erased or replaced.
 Take all four database backups before schema changes. The upstream installer

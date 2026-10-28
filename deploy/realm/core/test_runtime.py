@@ -101,6 +101,17 @@ class RuntimeTests(unittest.TestCase):
             (root / 'extraction/complete.json').write_text('{"core":"' + runtime.CORE + '"}')
             self.assertTrue(runtime.extraction_ready(root))
 
+    def test_game_child_has_no_operator_secrets_and_drops_privileges(self):
+        options = runtime.game_options(self.env(PATH='/usr/bin', LANG='C.UTF-8'))
+        self.assertEqual(options['user'], 10001)
+        self.assertEqual(options['group'], 10001)
+        self.assertEqual(options['extra_groups'], [])
+        self.assertNotIn('DB_ROOT_PASSWORD', options['env'])
+        self.assertNotIn('DB_MANGOS_PASSWORD', options['env'])
+        self.assertNotIn('DB_REALMWEB_PASSWORD', options['env'])
+        self.assertNotIn('SOAP_ADMIN_PASSWORD', options['env'])
+        self.assertEqual(options['env']['HOME'], '/home/mangos')
+
 
 if __name__ == '__main__':
     unittest.main()
