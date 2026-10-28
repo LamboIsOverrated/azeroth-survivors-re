@@ -1,6 +1,6 @@
 # Realm TEST economy module
 
-Requires Node 24 and the dependencies from `deploy/package-lock.json`. Run `node deploy/realm/economy/build.mjs` from the repository root. Serve generated `public/realm-wallet.bundle.js` and `public/realm-wallet.bundle.css` at the corresponding root URLs; load the JS module on the authenticated `/play` page. The wallet panel only mounts on `/play`.
+Requires Node 24 and the dependencies from `deploy/realm/package-lock.json`. Run `npm ci --prefix deploy/realm` and `npm run build --prefix deploy/realm` from the repository root. Serve generated `public/realm-wallet.bundle.js` and `public/realm-wallet.bundle.css` at the corresponding root URLs; load the JS module on the authenticated `/play` page. The wallet panel only mounts on `/play`.
 
 ```js
 import {createEconomy} from '../economy/api.mjs';
@@ -23,7 +23,7 @@ Optional `getCharacters(req)` must fetch the realm's session-scoped `GET /api/ch
 
 **Integration limit:** the account TEST vault is not CMaNGOS character money and cannot fund a character. Vendors, trade, loot, mail, auction settlement and character persistence belong to the game server. The optional snapshot is read-only; it does not implement the future token bridge. No kill payout or fabricated game reward is accepted here. The browser never submits a balance or character ownership claim.
 
-**Launch gate:** deposits, withdrawals and swaps return 503 unconditionally, even if a mint or launch-like flags are supplied. A supplied CA does not enable settlement. Live settlement still requires mint validation, an immutable conversion, a funded/reconciled reserve, signer operations, durable bridge escrow and idempotent settlement, game-server integration, abuse controls and launch approval. TEST characters, items and balances have no promised conversion or carryover. This module creates no mint, keys or treasury and sends no transactions.
+**Launch gate:** this module's deposit, withdrawal and swap routes return 503 unconditionally, even if a mint or launch-like flags are supplied. The separate `market/` module prepares guarded, noncustodial SOL/token swaps between a player's wallet assets; that does not redeem game currency. Its launch flags remain off in staging. The separate `settlement/` engine implements durable finalized receipts and withdrawal reservations without exposing them over HTTP. A supplied CA alone does not enable game settlement. Live game settlement still requires an immutable conversion, a funded/reconciled reserve, signer operations, durable world escrow, backed issuance, abuse controls and launch approval. TEST characters, items and balances have no promised conversion or carryover. This module creates no mint, keys or treasury and sends no transactions.
 
 Tests: `node --test deploy/realm/economy/tests/*.test.mjs`. They exercise real SQLite files, real Ed25519 signatures, restart/replay, account isolation, exact amounts, double spending, CSRF and closed launch paths. Read-only RPC tests inject the network response; no chain operation is sent during tests.
 

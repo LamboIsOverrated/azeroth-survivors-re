@@ -37,20 +37,19 @@ async function startRealm() {
   if(stopped)return;
   const data=process.env.CLIENT_DATA||resolve(stateRoot,'client/DerivedData');
   const original=process.env.CLIENT_SOURCE_DATA||resolve(stateRoot,'client/Data');
-  if(!await clientDataComplete(data)) {
-    if(!await clientDataComplete(original)) {
-      if(process.env.DOWNLOAD_GAME_DATA!=='true') {state={state:'waiting',message:'The realm is waiting for its game files.'};return;}
-      state={state:'initializing',message:'Preparing the game files for first use. Character creation will open when the realm is ready.'};
-      const exit=await python(resolve(here,'prepare_data.py'),[],{CLIENT_DATA:original});
-      if(stopped)return;if(exit!==0)return preparationFailed();
-    }
-    if(data!==original) {
-      state={state:'initializing',message:'Preparing the world for first use.'};
-      const exit=await python(resolve(here,'../core/repair_client.py'),['--source',original,'--output',data]);
-      if(stopped)return;if(exit!==0)return preparationFailed();
-    }
-    if(!await clientDataComplete(data))return preparationFailed();
+  if(resolve(data)===resolve(original))throw new Error('Original and derived client data must use separate directories.');
+  if(!await clientDataComplete(original)) {
+    if(process.env.DOWNLOAD_GAME_DATA!=='true') {state={state:'waiting',message:'The realm is waiting for its game files.'};return;}
+    state={state:'initializing',message:'Preparing the game files for first use. Character creation will open when the realm is ready.'};
+    const exit=await python(resolve(here,'prepare_data.py'),[],{CLIENT_DATA:original});
+    if(stopped)return;if(exit!==0)return preparationFailed();
   }
+  // Size canaries cannot detect same-size corruption or a mismatched restored dataset.
+  // The helper verifies every source hash and the derived content before every boot.
+  state={state:'initializing',message:'Verifying the world files.'};
+  const exit=await python(resolve(here,'../core/repair_client.py'),['--source',original,'--output',data]);
+  if(stopped)return;if(exit!==0)return preparationFailed();
+  if(!await clientDataComplete(data))return preparationFailed();
   state={state:'starting',message:'Starting the account and browser game service.'};
   child=spawn(process.env.REALM_BINARY||'/app/bin/wenilla-realm',[],{env:{...process.env,REALM_BIND:'127.0.0.1:8090',REALM_STATE_DIR:stateRoot,CLIENT_DATA:data},stdio:'inherit'});
   child.on('error',()=>{state={state:'error',message:'The account service could not start.'};server.close();setTimeout(()=>process.exit(1),250).unref();});
