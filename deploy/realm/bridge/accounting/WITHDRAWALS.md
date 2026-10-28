@@ -40,4 +40,6 @@ Initial local verification: the original 52 accounting tests remain unchanged. T
 
 ## Remaining trust and launch gates
 
+Fresh independent review through `cd825d9` found both identified proof defects resolved and no further actionable findings. Independent and coordinator runs each passed all 138 accounting/TEST bridge tests and all 85 realm package tests with no skips. Malformed failure proofs retain their holds; valid outgoing receipts with a null block time settle once and retain that original null. Deposit timestamp and expiry checks remain strict. This review covers the closed software stage, not real providers, signers, transactions or stock gameplay integration.
+
 The signer must only return transaction bytes and must never broadcast or independently send discarded signatures. Independently reviewed provider policy, actual complete-block coverage/evidence retention and the production witness implementation remain open gates; fixture policy IDs and hashes establish no real-chain capability. SOL fees/custody, actual core money/save/login/event integration, production workers, backup/restore, monitoring, final mint/conversion acceptance and explicit launch approval remain separate gates. A CA enables nothing by itself.
