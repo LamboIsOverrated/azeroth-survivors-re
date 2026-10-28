@@ -89,6 +89,7 @@ test('auction deposit and bid proceeds release held claims once; only the explic
   await k.prepareEvent(quote({id:'bid',accountId:2,family:'auction-bid',participants:[{accountId:2,guid:'20'}],escrows:[makeEscrow('bid-hold','auction',2,1)],legs:[{id:'hold',from:character(2,'20'),to:escrow('bid-hold'),units:'10'}]}));await k.advanceEvent(2,'bid');
   const settlement=quote({id:'auction-win',family:'auction-settle',participants:[],escrows:[{id:'listing-deposit',action:'settle'},{id:'bid-hold',action:'settle'},makeEscrow('seller-mail','mail',1,1)],legs:[{id:'deposit-return',from:escrow('listing-deposit'),to:escrow('seller-mail'),units:'2'},{id:'bid-proceeds',from:escrow('bid-hold'),to:escrow('seller-mail'),units:'9'},{id:'cut',from:escrow('bid-hold'),to:pool('auction-fees'),units:'1'}]});
   await assert.rejects(k.prepareEvent({...settlement,escrows:settlement.escrows.map(e=>e.id==='seller-mail'?{...e,beneficiaryAccountId:3}:e)}));
+  await assert.rejects(k.prepareEvent({...settlement,escrows:settlement.escrows.map(e=>e.id==='seller-mail'?{...e,ownerAccountId:2,retainedAccountId:2}:e)}));
   assert.equal(k.escrow(2,'bid-hold').availableAtoms,'1000');
   await k.prepareEvent(settlement);await k.advanceEvent(1,'auction-win');await k.advanceEvent(1,'auction-win');
   assert.equal(k.escrow(1,'seller-mail').availableAtoms,'1100');assert.equal(k.pool('auction-fees').availableAtoms,'100');assert.equal(k.pool('rewards').availableAtoms,'0');assert.equal(k.totals().claimsAtoms,'20000');

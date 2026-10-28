@@ -40,3 +40,18 @@ test('explicit async executors and money sinks are rejected before their bodies 
  assert.throws(()=>applyPreparedLegs(operation,async()=>{calls++;}));assert.equal(calls,0);
  assert.throws(()=>applyPreparedLegs(operation,(expected,ticket)=>ticket.apply(expected,async()=>{calls++;})));assert.equal(calls,0);
 });
+test('an expired event A ticket poisons the current event B even when B catches its rejection',()=>{
+ let expired,oldMutation,invalidCalls=0,newCalls=0;
+ applyPreparedLegs(operation,(expected,ticket)=>{expired=ticket;oldMutation=expected;ticket.apply(expected,()=>{});});
+ const nextRequest={id:'event-b',eventId:'event-b'},next={...operation,id:'event-b',request:nextRequest,requestHash:hash(nextRequest),mutations:mutations.map(m=>({...m,operationId:'event-b',eventId:'event-b',requestHash:hash(nextRequest)}))};
+ assert.throws(()=>applyPreparedLegs(next,(expected,ticket)=>ticket.apply(expected,()=>{
+  newCalls++;try{expired.apply(oldMutation,()=>invalidCalls++);}catch{}
+ })));
+ assert.equal(invalidCalls,0);assert.equal(newCalls,1);
+ newCalls=0;
+ assert.throws(()=>applyPreparedLegs(next,(expected,ticket)=>{
+  try{expired.apply(oldMutation,()=>invalidCalls++);}catch{}
+  ticket.apply(expected,()=>newCalls++);
+ }));
+ assert.equal(newCalls,0);
+});

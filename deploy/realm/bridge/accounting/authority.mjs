@@ -24,17 +24,18 @@ export function applyPreparedLegs(operation,executor){
   const key=value.legId+'|'+value.side+'|'+ownerKey(endpoint);if(seen.has(key))throw Error('Duplicate mutation authority');seen.add(key);return clean;
  });
  let poisoned=false;const consumed=[],context={poisoned:false};active=context;
+ const invalidate=()=>{poisoned=true;context.poisoned=true;if(active)active.poisoned=true;};
  try{
   for(const expected of mutations){
    let alive=true,used=false;const expectedText=canonical(expected);
    const ticket=Object.freeze({apply(actual,mutate){
-    if(!alive||used){poisoned=true;throw Error('Consumed/expired exact mutation ticket');}
+    if(!alive||used||context.poisoned||active!==context){invalidate();throw Error('Consumed/expired/poisoned exact mutation ticket');}
     used=true;
     try{
      if(canonical(actual)!==expectedText||typeof mutate!=='function'||types.isAsyncFunction(mutate))throw Error('Mutation exceeds exact synchronous leg authority');
      const result=synchronous(mutate());
      consumed.push(structuredClone(expected));return result;
-    }catch(error){poisoned=true;throw error;}
+    }catch(error){invalidate();throw error;}
    }});
    try{synchronous(executor(structuredClone(expected),ticket));if(!used)throw Error('Prepared mutation omitted');if(poisoned||context.poisoned)throw Error('Poisoned event must roll back');}
    catch(error){poisoned=true;throw error;}

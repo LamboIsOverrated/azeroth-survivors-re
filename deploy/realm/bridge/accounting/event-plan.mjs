@@ -6,6 +6,9 @@ const families=new Set(['trade','quest-reward','loot','vendor-sale','service','s
 const actions=new Set(['create','keep','settle','return','expire','delete']);
 const kinds=new Set(['mail','auction','trade','recovery']);
 function exact(value,keys){if(!value||Object.getPrototypeOf(value)!==Object.prototype||Object.keys(value).some(k=>!keys.includes(k)))throw Error('Unknown event field');}
+function retainedIdentity(value,expected){
+ if(value.ownerAccountId!==expected||value.beneficiaryAccountId!==expected||value.retainedAccountId!==expected)throw Error('Predetermined owner/beneficiary/retained identity mismatch');
+}
 function sortedUnique(rows,key){const result=[...rows].sort((a,b)=>key(a)<key(b)?-1:key(a)>key(b)?1:0);if(new Set(result.map(key)).size!==result.length)throw Error('Duplicate event participant/resource');return result;}
 export function owner(value){
  exact(value,['type','accountId','guid','id']);
@@ -21,7 +24,7 @@ export function eventRequest(input){
  const participants=sortedUnique(input.participants.map(p=>{exact(p,['accountId','guid','afterStateHash','action']);const value={accountId:account(p.accountId),guid:characterGuid(p.guid),afterStateHash:digest(p.afterStateHash),action:p.action??'keep'};if(!['keep','retire'].includes(value.action))throw Error('Unknown character lifecycle');return value;}),p=>p.guid);
  const escrows=sortedUnique(input.escrows.map(a=>{
   exact(a,['id','action','kind','ownerAccountId','beneficiaryAccountId','retainedAccountId','expiresAt']);const value={id:identifier(a.id),action:a.action};if(!actions.has(a.action))throw Error('Unknown escrow transition');
-  if(a.action==='create'){if(!kinds.has(a.kind))throw Error('Typed escrow required');Object.assign(value,{kind:a.kind,ownerAccountId:account(a.ownerAccountId),beneficiaryAccountId:account(a.beneficiaryAccountId),retainedAccountId:account(a.retainedAccountId),expiresAt:a.expiresAt});if(!Number.isSafeInteger(value.expiresAt)||value.expiresAt<0)throw Error('Exact escrow deadline required');if(value.retainedAccountId!==value.ownerAccountId)throw Error('Retained claims must belong to the original funding owner');}
+  if(a.action==='create'){if(!kinds.has(a.kind))throw Error('Typed escrow required');Object.assign(value,{kind:a.kind,ownerAccountId:account(a.ownerAccountId),beneficiaryAccountId:account(a.beneficiaryAccountId),retainedAccountId:account(a.retainedAccountId),expiresAt:a.expiresAt});if(!Number.isSafeInteger(value.expiresAt)||value.expiresAt<0)throw Error('Exact escrow deadline required');if(value.retainedAccountId!==value.ownerAccountId)throw Error('Retained claims must belong to the original funding owner');if(value.kind==='recovery')retainedIdentity(value,value.ownerAccountId);}
   else if(Object.keys(a).some(k=>!['id','action'].includes(k)))throw Error('Existing escrow metadata immutable');return value;
  }),a=>a.id);
  const ids=new Set();const legs=input.legs.map(l=>{
@@ -42,7 +45,8 @@ export function domain(value,cfg){if(!value||value.phase!=='LIVE'||value.namespa
 export function escrowState(value){
  if(!value||typeof value!=='object')throw Error('Complete escrow state required');
  const result={id:identifier(value.id),kind:value.kind,ownerAccountId:account(value.ownerAccountId),beneficiaryAccountId:account(value.beneficiaryAccountId),retainedAccountId:account(value.retainedAccountId),expiresAt:value.expiresAt,state:value.state,moneyUnits:units(value.moneyUnits).toString(),version:atoms(value.version).toString()};
- if(!kinds.has(result.kind)||!['open','returned','expired','settled','deleted'].includes(result.state)||!Number.isSafeInteger(result.expiresAt)||result.expiresAt<0)throw Error('Invalid escrow metadata');return result;
+ if(!kinds.has(result.kind)||!['open','returned','expired','settled','deleted'].includes(result.state)||!Number.isSafeInteger(result.expiresAt)||result.expiresAt<0||result.ownerAccountId!==result.retainedAccountId)throw Error('Invalid escrow metadata');
+ if(result.kind==='recovery'||['returned','expired'].includes(result.state))retainedIdentity(result,result.ownerAccountId);return result;
 }
 function policy(request,states){
  for(const l of request.legs){
@@ -68,12 +72,12 @@ function policy(request,states){
   if(!allowed)throw Error('Event family cannot authorize this leg');
   if(f==='escrow'&&t==='character'&&esc(l.from.id).beneficiaryAccountId!==l.to.accountId)throw Error('Escrow recipient is not its beneficiary');
   if(f==='character'&&t==='escrow'&&esc(l.to.id).ownerAccountId!==l.from.accountId)throw Error('Escrow funding owner mismatch');
-  if(f==='escrow'&&t==='escrow'&&is(l.to.id,'recovery')&&esc(l.to.id).beneficiaryAccountId!==esc(l.from.id).retainedAccountId)throw Error('Recovery beneficiary mismatch');
+  if(f==='escrow'&&t==='escrow'&&is(l.to.id,'recovery'))retainedIdentity(esc(l.to.id),esc(l.from.id).retainedAccountId);
   if(f==='escrow'&&t==='escrow'&&['auction-bid','auction-settle','auction-cancel'].includes(request.family)){
    const beneficiary=request.family==='auction-settle'?esc(l.from.id).beneficiaryAccountId:esc(l.from.id).retainedAccountId;
-   if(esc(l.to.id).beneficiaryAccountId!==beneficiary)throw Error('Auction proceeds/refund beneficiary mismatch');
+   retainedIdentity(esc(l.to.id),beneficiary);
   }
-  if(request.family==='character-delete'&&esc(l.to.id).beneficiaryAccountId!==l.from.accountId)throw Error('Retired claim recovery owner mismatch');
+  if(request.family==='character-delete')retainedIdentity(esc(l.to.id),l.from.accountId);
  }
 }
 export function compileEvent(req,proof,cfg,now){
