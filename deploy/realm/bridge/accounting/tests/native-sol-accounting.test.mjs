@@ -5,7 +5,7 @@ import {Transaction} from '@solana/web3.js';
 import {configuration,gameAtoms} from '../amounts.mjs';
 import {createAccounting} from '../kernel.mjs';
 import {input as splInput} from './fixtures.mjs';
-import {input,DEVNET_GENESIS,treasuryWallet,wallet,systemInfo,nativeReceipt,nativeFixture,nativeDeposit,nativeReserve,nativeFinalized} from './native-sol-accounting-fixtures.mjs';
+import {input,DEVNET_GENESIS,treasuryWallet,wallet,systemInfo,nativeRpc,nativeReceipt,nativeFixture,nativeDeposit,nativeReserve,nativeFinalized} from './native-sol-accounting-fixtures.mjs';
 import {pairs,signFixture} from '../../../economy/settlement/tests/fixtures.mjs';
 import {signatureOf} from '../../../economy/settlement/protocol.mjs';
 
@@ -41,11 +41,30 @@ test('a finalized native failure consumes only proven network fee and returns ne
  const result=await f.k.reconcileWithdrawal(1,'native-withdraw');assert.equal(result.state,'failed');assert.equal(result.result.feeLamports,'5000');assert.equal(f.k.balance(1).vaultAtoms,'995000');assert.deepEqual(f.k.totals(),{reserveAtoms:'995000',claimsAtoms:'995000'});f.restart();await f.k.reconcileWithdrawal(1,'native-withdraw');assert.equal(f.k.balance(1).vaultAtoms,'995000');
 });
 
-test('native fee quote must be exact, timely and smaller than gross debit before signer is called',async t=>{
+test('invalid or unaffordable native fee quotes reject before claiming funds or locking the account',async t=>{
  for(const quote of [null,-1,0,1.2,Number.MAX_SAFE_INTEGER+1,100000,100001]){
-  const f=await nativeFixture(t);await nativeReserve(f.k);f.deps.rpc.fee=quote;let signs=0;f.deps.signer={signTransaction:async()=>{signs++;throw Error('must not sign');}};f.restart();await assert.rejects(f.k.prepareWithdrawal(1,'native-withdraw'));assert.equal(signs,0);assert.equal(f.k.withdrawal(1,'native-withdraw').state,'reserved');
+  const f=await nativeFixture(t);f.deps.rpc.fee=quote;let signs=0;f.deps.signer={signTransaction:async()=>{signs++;throw Error('must not sign');}};f.restart();await assert.rejects(nativeReserve(f.k));assert.equal(signs,0);assert.throws(()=>f.k.withdrawal(1,'native-withdraw'),/Owned/i);assert.equal(f.k.balance(1).vaultAtoms,'1000000');assert.deepEqual(f.k.pendingWithdrawals().entries,[]);
+  const read=new DatabaseSync(f.path);try{assert.equal(read.prepare("SELECT COUNT(*) n FROM ac_locks WHERE guid='account:1'").get().n,0);assert.equal(read.prepare("SELECT COUNT(*) n FROM ac_operations WHERE id='native-withdraw'").get().n,0);}finally{read.close();}
+  f.restart();assert.equal(f.k.balance(1).vaultAtoms,'1000000');f.deps.rpc.fee=5000;assert.equal((await nativeReserve(f.k)).state,'reserved');
  }
- const f=await nativeFixture(t);await nativeReserve(f.k);const call=f.deps.rpc.call;f.deps.rpc.call=async(m,a)=>m==='getFeeForMessage'?{context:{slot:1},value:5000}:call(m,a);await assert.rejects(f.k.prepareWithdrawal(1,'native-withdraw'));assert.equal(f.k.withdrawal(1,'native-withdraw').state,'reserved');
+ const f=await nativeFixture(t);const call=f.deps.rpc.call;f.deps.rpc.call=async(m,a)=>m==='getFeeForMessage'?{context:{slot:1},value:5000}:call(m,a);await assert.rejects(nativeReserve(f.k));assert.equal(f.k.balance(1).vaultAtoms,'1000000');assert.deepEqual(f.k.pendingWithdrawals().entries,[]);
+});
+
+test('gross native requests below or equal to the fee leave no claim or lock and accept a corrected retry',async t=>{
+ for(const amount of ['1','5000']){
+  const f=await nativeFixture(t);await assert.rejects(nativeReserve(f.k,{amount}),/fee/i);assert.equal(f.k.balance(1).vaultAtoms,'1000000');assert.throws(()=>f.k.withdrawal(1,'native-withdraw'));f.restart();assert.equal((await nativeReserve(f.k,{amount:'100000'})).state,'reserved');assert.equal(f.k.balance(1).vaultAtoms,'900000');
+ }
+});
+
+test('native reserve atomically persists its exact fee plan and preparation reuses it across quote changes and restart',async t=>{
+ const f=await nativeFixture(t),reserved=await nativeReserve(f.k);assert.equal(reserved.feeLamports,'5000');assert.equal(reserved.netLamports,'95000');
+ const read=new DatabaseSync(f.path);try{const record=JSON.parse(read.prepare("SELECT receipt FROM ac_operations WHERE id='native-withdraw'").get().receipt);assert.equal(record.unsigned.feeLamports,'5000');assert.equal(record.unsigned.netLamports,'95000');assert.equal(record.signed,null);}finally{read.close();}
+ const quoted=f.deps.rpc.calls.filter(call=>call.method==='getFeeForMessage').length;f.deps.rpc.fee=9000;f.restart();assert.equal((await nativeReserve(f.k)).feeLamports,'5000');const signed=await f.k.prepareWithdrawal(1,'native-withdraw');assert.equal(signed.feeLamports,'5000');assert.equal(signed.netLamports,'95000');assert.equal(f.deps.rpc.calls.filter(call=>call.method==='getFeeForMessage').length,quoted);
+});
+
+test('competing native reservations choose one immutable fee plan before either caller can hold additional funds',async t=>{
+ const f=await nativeFixture(t),rpc=nativeRpc();rpc.fee=7000;rpc.accounts.set(treasuryWallet,systemInfo(1010000));const other=createAccounting({path:f.path,config:f.config,...f.deps,rpc});
+ try{const [a,b]=await Promise.all([nativeReserve(f.k),nativeReserve(other)]);assert.equal(a.feeLamports,b.feeLamports);assert.equal(a.netLamports,b.netLamports);assert.ok(['5000','7000'].includes(a.feeLamports));assert.equal(BigInt(a.feeLamports)+BigInt(a.netLamports),100000n);assert.equal(f.k.balance(1).vaultAtoms,'900000');assert.equal(f.k.pendingWithdrawals().entries.length,1);}finally{other.close();}
 });
 
 test('wrong fee or fee-only failure balance contradiction keeps native claim reserved',async t=>{

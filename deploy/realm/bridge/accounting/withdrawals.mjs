@@ -61,6 +61,20 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
   db.prepare('INSERT INTO ac_schema VALUES(3,?)').run('conserved-withdrawals-v1');
  }
  function transaction(op,blockhash,netLamports){return native?nativeTransferTransaction({wallet:cfg.treasuryWallet,destination:op.request.destinationWallet,lamports:netLamports??op.request.atoms,memo:op.memo,blockhash}):transferTransaction({wallet:cfg.treasuryWallet,source:cfg.treasuryTokenAccount,mint:cfg.mint,destination:op.request.destinationTokenAccount,atoms:op.request.atoms,decimals:cfg.decimals,memo:op.memo,blockhash});}
+ async function unsignedPlan(op,observation){
+  const latest=await rpc.call('getLatestBlockhash',[{commitment:'finalized',minContextSlot:observation.observedSlot}]);
+  if(safeInteger(latest?.context?.slot)<observation.observedSlot)throw Error('Stale withdrawal blockhash');address(latest?.value?.blockhash);safeInteger(latest.value.lastValidBlockHeight);
+  const origin=await rpc.call('getBlock',[latest.context.slot,{commitment:'finalized',transactionDetails:'none',rewards:false,maxSupportedTransactionVersion:0}]);
+  if(!origin||origin.blockhash!==latest.value.blockhash||safeInteger(origin.blockHeight)>latest.context.slot||origin.blockHeight>latest.value.lastValidBlockHeight)throw Error('Exact finalized blockhash origin required');
+  const proposed={blockhash:latest.value.blockhash,blockhashSlot:latest.context.slot,blockhashOriginHeight:origin.blockHeight,lastValidBlockHeight:latest.value.lastValidBlockHeight};
+  if(native){
+   const quote=async tx=>{const value=await rpc.call('getFeeForMessage',[tx.serializeMessage().toString('base64'),{commitment:'finalized',minContextSlot:latest.context.slot}]);if(safeInteger(value?.context?.slot)<latest.context.slot||safeInteger(value.value)===0)throw Error('Exact fresh native fee quote required');return BigInt(value.value);};
+   const fee=await quote(transaction(op,proposed.blockhash)),net=positive(op.request.atoms)-fee;if(net<=0n)throw Error('Withdrawal gross debit must exceed network fee');
+   if(await quote(transaction(op,proposed.blockhash,net.toString()))!==fee)throw Error('Native fee quote changed for exact payout message');
+   Object.assign(proposed,{feeLamports:fee.toString(),netLamports:net.toString(),withdrawalFeePolicy:cfg.withdrawalFeePolicy});
+  }
+  return proposed;
+ }
  function planProof(row){
   const plan=row.receipt&&JSON.parse(row.receipt).unsigned;if(!plan)return null;
   address(plan.blockhash);safeInteger(plan.blockhashSlot);safeInteger(plan.blockhashOriginHeight);safeInteger(plan.lastValidBlockHeight);
@@ -144,11 +158,15 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
    const prior=get(id);if(prior)return duplicate(prior,request,wallet);
    await network(archiveRpc);const op={format:FORMAT,phase:'LIVE',namespaceId:cfg.namespaceId,configHash:cfg.hash,id,request,wallet,createdAt:safeInteger(clock()),memo:`realm-live:withdrawal:${cfg.hash}:${accountId}:${id}`};
    const destinationSlot=await destinationProof(op),observation=await solvent(destinationSlot);
+   // A native request must afford its exact gross/fee/net payment before any
+   // claim or account lock exists. Its plan and reservation commit together.
+   const plan=native?await unsignedPlan(op,observation):null;
    return store.atomic(()=>{
     const race=get(id);if(race)return duplicate(race,request,wallet);checkSolvent(observation);enable();
-    db.prepare('INSERT INTO ac_operations VALUES(?,?,?,?,NULL)').run(id,accountId,canonical(op),'reserved');
+    db.prepare('INSERT INTO ac_operations VALUES(?,?,?,?,?)').run(id,accountId,canonical(op),'reserved',plan?canonical({unsigned:plan,signed:null,result:null}):null);
     db.prepare('INSERT INTO ac_locks VALUES(?,?)').run('account:'+accountId,id);
     store.post({key:'withdrawal-reserve:'+id,kind:'withdrawal-reserve',payload:{operation:op,...observation},postings:[{bucket:'vault_available',owner:'account:'+accountId,delta:-positive(amount)},{bucket:'withdrawal_reserved',owner:'operation:'+id,delta:positive(amount)}]});
+    if(plan)store.post({key:'withdrawal-prepared:'+id,kind:'withdrawal-prepared',payload:{operationId:id,unsigned:plan,observedSlot:plan.blockhashSlot},postings:[]});
     return view(owned(accountId,id));
    });
   },
@@ -156,20 +174,11 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
    const row=owned(accountId,id);if(row.state!=='reserved')return view(row);adapters({needSigner:true});await network(archiveRpc);
    const op=JSON.parse(row.payload);let plan=planProof(row);
    if(!plan){
-    const destinationSlot=await destinationProof(op),observation=await solvent(destinationSlot),latest=await rpc.call('getLatestBlockhash',[{commitment:'finalized',minContextSlot:observation.observedSlot}]);
-    if(safeInteger(latest?.context?.slot)<observation.observedSlot)throw Error('Stale withdrawal blockhash');address(latest?.value?.blockhash);safeInteger(latest.value.lastValidBlockHeight);
-    const origin=await rpc.call('getBlock',[latest.context.slot,{commitment:'finalized',transactionDetails:'none',rewards:false,maxSupportedTransactionVersion:0}]);
-    if(!origin||origin.blockhash!==latest.value.blockhash||safeInteger(origin.blockHeight)>latest.context.slot||origin.blockHeight>latest.value.lastValidBlockHeight)throw Error('Exact finalized blockhash origin required');
-    const proposed={blockhash:latest.value.blockhash,blockhashSlot:latest.context.slot,blockhashOriginHeight:origin.blockHeight,lastValidBlockHeight:latest.value.lastValidBlockHeight};
-    if(native){
-     const quote=async tx=>{const value=await rpc.call('getFeeForMessage',[tx.serializeMessage().toString('base64'),{commitment:'finalized',minContextSlot:latest.context.slot}]);if(safeInteger(value?.context?.slot)<latest.context.slot||safeInteger(value.value)===0)throw Error('Exact fresh native fee quote required');return BigInt(value.value);};
-     const fee=await quote(transaction(op,proposed.blockhash)),net=positive(op.request.atoms)-fee;if(net<=0n)throw Error('Withdrawal gross debit must exceed network fee');
-     if(await quote(transaction(op,proposed.blockhash,net.toString()))!==fee)throw Error('Native fee quote changed for exact payout message');
-     Object.assign(proposed,{feeLamports:fee.toString(),netLamports:net.toString(),withdrawalFeePolicy:cfg.withdrawalFeePolicy});
-    }
+    if(native)throw Error('Native reservation lacks its immutable pre-reservation fee plan');
+    const destinationSlot=await destinationProof(op),observation=await solvent(destinationSlot),proposed=await unsignedPlan(op,observation);
     plan=store.atomic(()=>{
      const current=owned(accountId,id),prior=planProof(current);if(prior)return prior;checkSolvent(observation);
-     store.post({key:'withdrawal-prepared:'+id,kind:'withdrawal-prepared',payload:{operationId:id,unsigned:proposed,observedSlot:latest.context.slot},postings:[]});
+     store.post({key:'withdrawal-prepared:'+id,kind:'withdrawal-prepared',payload:{operationId:id,unsigned:proposed,observedSlot:proposed.blockhashSlot},postings:[]});
      db.prepare('UPDATE ac_operations SET receipt=? WHERE id=?').run(canonical({unsigned:proposed,signed:null,result:null}),id);return proposed;
     });
    }
