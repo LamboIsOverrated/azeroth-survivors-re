@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azeroth TEST PvP</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
+  body { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+  #game-surface { grid-row: 2; position: relative; min-height: 0; min-width: 0; overflow: hidden; }
+  #benilla { display: block; width: 100%; height: 100%; }
+  #bar { grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: .25rem; padding: .35rem .6rem; overflow-x: auto; white-space: nowrap; font: 12px system-ui, sans-serif; color: #aaa; background: #101713; z-index: 10; }
+  #bar .realm-player { margin-right: auto; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; }
+  #bar form { margin: 0; }
+  #bar a, #bar button { color: #ddd; background: none; border: 0; cursor: pointer; font: inherit; margin-left: .6rem; text-decoration: underline; }
+  /* The notifications bell (web/bridge.js `wenilla.notify`) — an icon, so no underline, and
+     dimmed until the browser has actually granted the permission. */
+  #bar #bell { font-size: 14px; text-decoration: none; opacity: .55; }
+  #bar #bell.on { opacity: 1; }
+  #realm-test-notice { grid-row: 3; padding: 4px 8px; background: #352400; color: #ffe499; font: 12px/1.4 system-ui, sans-serif; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; color: #ccc; font: 16px system-ui, sans-serif; background: #000; }
+  #msg.hidden { display: none; }
+</style>
+<script>
+  // Sound: the browser suspends any AudioContext created before the first user gesture, and the
+  // mixer creates its at startup — resume every context on the first click/key.
+  (() => {
+    const contexts = [];
+    for (const name of ['AudioContext', 'webkitAudioContext']) {
+      const Orig = window[name];
+      if (!Orig) continue;
+      const Patched = function (...args) { const ctx = new Orig(...args); contexts.push(ctx); return ctx; };
+      Patched.prototype = Orig.prototype;
+      window[name] = Patched;
+    }
+    const resume = () => { for (const ctx of contexts) if (ctx.state !== 'running') ctx.resume().catch(() => {}); };
+    for (const ev of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(ev, resume, { capture: true, passive: true });
+  })();
+</script>
+<script type="importmap">{"imports":{"wasi_snapshot_preview1":"./wasi_stubs.js"}}</script>
+</head>
+<body>
+<div id="realm-test-notice">TEST realm · Currency is nonredeemable. Characters, items and balances will not carry over to live launch.</div>
+<script type="module">import('/realm-wallet.bundle.js').catch(error => console.warn('Optional realm wallet unavailable:', error));</script>
+<div id="bar"><span class="realm-player">{{ user.display_name }}</span>{% if user.is_admin() %}<a href="/admin">admin</a>{% endif %}<a href="/" title="Reconnect to the realm after a lost connection">reconnect</a><a href="/account/password">password</a><button type="button" id="bell" title="Desktop notifications while this tab is in the background: level-ups, death, whispers, invites, mail, combat. Asks the browser once.">🔔</button><button type="button" id="fs" title="Full screen. Captures Esc, Tab and Ctrl+W for the game — press and hold Esc to leave.">full screen</button><form method="post" action="/logout"><button type="submit">sign out</button></form></div>
+<main id="game-surface"><div id="msg">Loading the realm…</div><canvas id="benilla"></canvas></main>
+<script type="module">
+  // #msg covers only the pre-boot failures (no WebGPU, credential fetch); the moment boot()
+  // takes over, its own overlay owns all progress — the old code hid #msg here and then did
+  // every expensive thing (download, compile, the catalog frame) behind a black canvas.
+  const msg = document.getElementById('msg');
+  if (!navigator.gpu) {
+    msg.textContent = 'This browser has no WebGPU. Use a current Chrome or Edge (on Linux: chrome://flags/#enable-unsafe-webgpu).';
+    throw new Error('no webgpu');
+  }
+  // Full-screen key capture + durable settings storage (web/platform.js). Imported dynamically
+  // and never awaited: these are conveniences, and a *static* import that failed to resolve —
+  // one forgotten line in scripts/web-build.sh — would stop this whole module from executing,
+  // costing the credential fetch and the boot. Both calls sit after the WebGPU gate so a
+  // browser that cannot run the client is never asked for storage nor shown a dead button.
+  import('./platform.js')
+    .then(({ installFullscreenToggle, requestPersistentStorage }) => {
+      requestPersistentStorage();
+      installFullscreenToggle(document.getElementById('fs'), {
+        focusTarget: document.getElementById('benilla'),
+      });
+    })
+    .catch((e) => console.warn('platform.js:', e));
+  // The JavaScript bridge (web/bridge.js, `window.wenilla` in the console): live game state
+  // out, commands in, the hidden-tab keepalive and desktop notifications. Same posture as
+  // platform.js above — dynamic, unawaited, never load-bearing, and after the WebGPU gate.
+  // `?bridge=hud` / `?bridge=idle` mount an example from web/examples/ on top; `?bridge=0`
+  // turns the bridge off for the session (the wasm reads it from the env/query — webbridge.rs).
+  import('./bridge.js')
+    .then(({ wenilla }) => {
+      const bell = document.getElementById('bell');
+      const offTitle = bell.title; // captured before the first toggle, so it can come back
+      bell.addEventListener('click', async () => {
+        const on = wenilla.notify.enabled ? (wenilla.notify.disable(), false) : await wenilla.notify.enable();
+        bell.classList.toggle('on', on);
+        bell.title = on ? 'Notifications on — click to turn off.' : offTitle;
+      });
+      const example = new URLSearchParams(location.search).get('bridge');
+      if (example && /^[a-z]+$/.test(example) && example !== '0') {
+        import(`./examples/${example}.js`).catch((e) => console.warn(`examples/${example}.js:`, e));
+      }
+    })
+    .catch((e) => console.warn('bridge.js:', e));
+  // The game credentials come over this authenticated session, never through the URL. The
+  // client reads them from `window.__wenilla_env` once during boot, then the global is dropped.
+  const r = await fetch('/api/play', { headers: { 'X-Requested-With': 'wenilla' }, credentials: 'same-origin' });
+  if (r.status === 401) { location.href = '/login'; throw new Error('not signed in'); }
+  if (!r.ok) { msg.textContent = 'Could not fetch your realm credentials (' + r.status + '). Try again in a minute.'; throw new Error('play ' + r.status); }
+  const env = await r.json();
+  // `realm` skips the realm list (a name the list lacks falls through to it); `char` is set for a
+  // dungeon-preset character, which the client then enters the world as directly.
+  window.__wenilla_env = { user: env.user, pass: env.pass, host: env.host, realm: env.realm, transport_profile: env.transport_profile, ...(env.char ? { char: env.char } : {}), ...(env.dev_query_creds ? { dev_query_creds: '1' } : {}) };
+  const { default: init } = await import('./wenilla.js');
+  const { bind } = await import('./wasi_stubs.js');
+  const { boot } = await import('./boot.js');
+  msg.remove(); // boot()'s overlay takes over from here — see web/boot.js
+  const w = await boot(init, { variant: 'mmo' });
+  bind(w.memory);
+  delete window.__wenilla_env;
+</script>
+</body>
+</html>

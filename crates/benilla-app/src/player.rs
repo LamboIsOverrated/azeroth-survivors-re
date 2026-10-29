@@ -47,6 +47,18 @@ mod follow;
 mod gait;
 mod input;
 // `pub(crate)` for its `LandHere` message, which the debug panel writes.
+#[cfg(target_arch = "wasm32")]
+mod browser_entry;
+#[cfg(target_arch = "wasm32")]
+mod browser_entry_state;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use browser_entry::discard_before_world_entry;
+#[cfg(target_arch = "wasm32")]
+mod browser_mode_ack;
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_movement;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use browser_movement::browser_reentry;
 pub(crate) mod land;
 mod move_trace;
 mod movement_net;
@@ -209,6 +221,16 @@ pub(crate) struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(
+            Update,
+            browser_entry::observe
+                .in_set(WorldStage::Input)
+                .after(embody::maintain_embodiment)
+                .after(wire_in::release_on_session_end)
+                .before(server_ride::drive_self_ride)
+                .before(control),
+        );
         net::register(app);
         follow::plugin(app);
         approach::plugin(app);

@@ -25,8 +25,12 @@ pub(crate) mod handlers;
 pub(crate) mod io;
 mod motion;
 mod objects;
+#[cfg(target_arch = "wasm32")]
+mod select_keepalive;
 pub(crate) use objects::tear_down;
 mod session;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_movement_guard;
 mod world;
 
 pub(crate) use apply::apply_net_updates;
@@ -67,6 +71,11 @@ impl Plugin for NetPlugin {
         crate::query_cache::register::<crate::names::NameCache>(app);
         crate::query_cache::register::<crate::go_templates::GameObjectTemplates>(app);
         crate::query_cache::register::<crate::items::Items>(app);
+        #[cfg(target_arch = "wasm32")]
+        benilla_protocol::messages::configure_browser_movement_profile(
+            crate::webenv::var("WOW_TRANSPORT_PROFILE").as_deref(),
+        )
+        .expect("unsupported browser movement profile");
         let handles = io::spawn_net(self.connect);
         if !self.connect {
             app.insert_resource(NetOffline);
@@ -81,11 +90,21 @@ impl Plugin for NetPlugin {
             last_ping: 0.0,
             warned: 0,
         })
+        .init_resource::<web_movement_guard::FrameGate>()
         .add_systems(
             Update,
-            web_writer_pump
+            (web_movement_guard::guard_before_dispatch, web_writer_pump)
+                .chain()
                 .in_set(WorldStage::Net)
                 .before(apply_net_updates),
+        )
+        .add_systems(
+            Update,
+            // Flush the qualified mover claim and its responses before terrain streaming can
+            // block the main thread. Keep the pre-Net pump and its pause fence unchanged.
+            web_writer_pump
+                .after(WorldStage::Input)
+                .before(WorldStage::Stream),
         );
         // In the net stage: the lighting resolve runs after it and reads this frame's clock.
         app.add_systems(
@@ -201,8 +220,21 @@ pub(crate) struct WebWriter {
 /// Adopt a freshly-connected writer, drain the frame's commands through it, and keep the 30 s
 /// keepalive going — the web's `writer_loop`, once per frame instead of once per `select!`.
 #[cfg(target_arch = "wasm32")]
-fn web_writer_pump(mut web: ResMut<WebWriter>, time: Res<Time>, ping: Res<PingShared>) {
+fn web_writer_pump(
+    mut web: ResMut<WebWriter>,
+    movement_gate: Res<web_movement_guard::FrameGate>,
+    time: Res<Time<Real>>,
+    ping: Res<PingShared>,
+    state: Res<State<crate::char_select::ClientState>>,
+    pick: Res<CharPick>,
+    intent: Res<crate::login::LoginIntent>,
+) {
     let web = &mut *web;
+    if movement_gate.discard_if_blocked(web.cmd_rx.try_iter()) {
+        // The guard closes both sockets before this pump; discard every queued command so no
+        // old pose is stamped as a current report while authoritative re-entry owns the page.
+        return;
+    }
     while let Ok(w) = web.writer_rx.try_recv() {
         web.writer = Some(w);
         web.warned = 0;
@@ -210,6 +242,21 @@ fn web_writer_pump(mut web: ResMut<WebWriter>, time: Res<Time>, ping: Res<PingSh
         // A fresh connection restarts the keepalive from scratch, like the real client: sequence 1
         // is the new socket's first ping, and a stale pong from the old one can no longer match.
         *ping.0.lock().expect("ping clock") = io::PingClock::default();
+    }
+    // Before the writer handover the IO task still owns the unsplit socket. Keep it alive
+    // through its park channel; an initial login has no socket, so it must queue nothing.
+    if select_keepalive::due(
+        intent.has_authenticated_roster()
+            && matches!(
+                state.get(),
+                crate::char_select::ClientState::CharSelect
+                    | crate::char_select::ClientState::CharCreate
+            ),
+        time.elapsed_secs_f64(),
+        &mut web.last_ping,
+        io::PING_INTERVAL.as_secs_f64(),
+    ) {
+        let _ = pick.0.try_send(CharRequest::KeepAlive);
     }
     let Some(writer) = web.writer.as_mut() else {
         // No live writer: the session is gone and these commands evaporate — the same answer the
@@ -471,6 +518,9 @@ pub(crate) struct CharPick(pub(crate) async_channel::Sender<CharRequest>);
 
 /// One request to the IO thread parked at character select.
 pub(crate) enum CharRequest {
+    /// Browser keepalive while the unsplit world connection is parked at select/create.
+    #[cfg(any(target_arch = "wasm32", test))]
+    KeepAlive,
     /// Log in as this character (`CMSG_PLAYER_LOGIN`).
     Enter(u64),
     /// Create a character (`CMSG_CHAR_CREATE`), then stay parked at select with the fresh roster.
@@ -1766,6 +1816,14 @@ pub(crate) enum ClientCommand {
         pos: [f32; 3],
         orientation: f32,
     },
+    #[cfg(target_arch = "wasm32")]
+    BrowserMoveModeAck {
+        guid: u64,
+        counter: u32,
+        mode: MoveMode,
+        apply: bool,
+        movement: benilla_protocol::messages::BrowserModeMovement,
+    },
     /// `CMSG_MOVE_KNOCK_BACK_ACK`, `launch` echoed as the jump tail. Sent on the frame the mover
     /// takes off, never on receipt: the reference applies (`0x61624d call 0x6179c0`) then sends
     /// (`0x616261`) in one call, so the wire pose is post-launch.
@@ -2214,6 +2272,7 @@ pub(crate) struct ClientControlMessage {
 /// `SMSG_FORCE_*_SPEED_CHANGE` for our mover; the controller answers
 /// [`ClientCommand::ForceSpeedAck`] with its live pose.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct SpeedChangeMessage {
     pub(crate) guid: u64,
     pub(crate) kind: SpeedKind,
@@ -2224,6 +2283,7 @@ pub(crate) struct SpeedChangeMessage {
 /// Root, water-walk, feather-fall or hover granted or revoked on our mover: the server's
 /// `IsFlagAckOpcode` set. The controller acks with its live pose.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct MoveModeMessage {
     /// Our mover's guid, echoed in the ack.
     pub(crate) guid: u64,
@@ -2234,6 +2294,7 @@ pub(crate) struct MoveModeMessage {
 
 /// `SMSG_MOVE_KNOCK_BACK` at our mover; the controller launches and acks.
 #[derive(Message, Clone, Copy)]
+#[cfg_attr(target_arch = "wasm32", derive(PartialEq))]
 pub(crate) struct KnockBackMessage {
     /// Our mover's guid, echoed in the ack as a full u64.
     pub(crate) guid: u64,

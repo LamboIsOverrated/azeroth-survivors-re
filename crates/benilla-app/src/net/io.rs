@@ -602,9 +602,11 @@ async fn run(
         }
 
         // Park at character select until the app answers. Create and delete are serviced in place.
-        // If the server kicked the parked socket meanwhile, the login below fails, the cycle
-        // restarts and the app re-sends its pick, so the park needs no keepalive.
+        // The browser pumps the ordinary 30s keepalive through this park: its relay has an
+        // idle deadline, and post-roster socket loss deliberately does not retake an account.
         bevy::log::info!("net: parked at character select");
+        #[cfg(any(target_arch = "wasm32", test))]
+        let mut parked_ping_sequence = 0u32;
         let guid = loop {
             // Two channels, one park: `RealmList.xml` is a `frameStrata="DIALOG"` frame, so Change
             // Realm raises it over character select and both must be served while it is open.
@@ -656,6 +658,12 @@ async fn run(
                 },
                 Fired::Pick(pick) => match pick {
                     Err(_) => Parked::Exit,
+                    #[cfg(any(target_arch = "wasm32", test))]
+                    Ok(CharRequest::KeepAlive) => {
+                        parked_ping_sequence = parked_ping_sequence.wrapping_add(1);
+                        session.ping(parked_ping_sequence, 0)?;
+                        Parked::StayPut
+                    }
                     Ok(CharRequest::Enter(guid)) => Parked::Play(guid),
                     // Select's Back: drop the parked session, return to the login park.
                     Ok(CharRequest::Abandon) => Parked::Repark,
@@ -711,6 +719,9 @@ async fn run(
             .map(|c| c.name.clone())
             .unwrap_or_default();
         session.player_login_async(refuse_once(guid)).await?;
+        // CMaNGOS rejects this before AddToWorld. The browser claims after its matching self
+        // create in player::browser_entry; native/reference retains its existing handshake.
+        #[cfg(not(target_arch = "wasm32"))]
         session.set_active_mover_async(guid).await?;
 
         let billing_time_rested = session.billing_time_rested();
@@ -1414,6 +1425,14 @@ pub(super) fn dispatch(w: &mut WorldWriter, cmd: ClientCommand) -> Result<()> {
             pos,
             orientation,
         } => w.move_mode_ack(guid, counter, mode, apply, flags, (pos, orientation)),
+        #[cfg(target_arch = "wasm32")]
+        ClientCommand::BrowserMoveModeAck {
+            guid,
+            counter,
+            mode,
+            apply,
+            movement,
+        } => w.browser_move_mode_ack(guid, counter, mode, apply, movement),
         ClientCommand::KnockBackAck {
             guid,
             counter,

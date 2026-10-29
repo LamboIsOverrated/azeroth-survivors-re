@@ -1,0 +1,13 @@
+{% extends "admin_base.html" %}
+{% import "icons.html" as ic %}
+{% block title %}Audit — {{ realm_name }}{% endblock %}
+{% block top_title %}Audit{% endblock %}
+{% block content %}
+<div class="head"><span class="eyebrow">History</span><h1 class="headline" style="text-transform: none; letter-spacing: 0.02em;">Audit log</h1><p class="deck">Every sign-in and every admin action. Web addresses are kept for 90 days, then removed.</p></div>
+<div class="card">
+  <div class="card-head"><span class="card-title">Newest first</span>{% if let Some(b) = next_before %}<a class="ghost" href="/admin/audit?before={{ b }}">Older →</a>{% endif %}</div>
+  <table class="t"><tr><th>When (UTC)</th><th>Who</th><th>IP</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+  {% for e in entries %}<tr><td class="k tabular">{{ self::when(e.at) }}</td><td>{{ e.actor.as_deref().unwrap_or("—") }}</td><td class="k" style="font-family: var(--font-mono); font-size: 12px;">{{ e.ip.as_deref().unwrap_or("") }}</td><td><code>{{ e.action }}</code></td><td>{{ e.target.as_deref().unwrap_or("") }}</td><td class="k">{{ e.detail.as_deref().unwrap_or("") }}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}

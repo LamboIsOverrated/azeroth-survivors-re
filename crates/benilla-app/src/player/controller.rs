@@ -122,6 +122,13 @@ pub(super) fn control(
         ..*pointer.3
     };
     let dt = time.delta_secs();
+    #[cfg(target_arch = "wasm32")]
+    let browser_dt = {
+        if player.browser_movement.recovering() {
+            return;
+        }
+        player.browser_movement.poll(time.delta())
+    };
     // Free fly reads no keys while an EditBox is `typing` (not the per-key `consumed`, a binding's
     // concern); `binds` applied that gate when it latched, and the dev chords ignore it.
     let typing = ui_capture.typing;
@@ -297,6 +304,17 @@ pub(super) fn control(
             .map(|(_, t, ..)| (t.translation, server_ride::yaw_of(t.rotation))),
     );
 
+    // world_focus continues terrain/transfer loading while we await the actual claimed body.
+    // No movement packet or acknowledgement may fabricate a pose during that handshake.
+    #[cfg(target_arch = "wasm32")]
+    if player.browser_movement.recovering()
+        || !player
+            .browser_entry
+            .can_report(player.foreign_mover.or(self_guid))
+    {
+        return;
+    }
+
     let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
 
     // On a transport, recompose the rider from the deck's pose this frame, before input integrates.
@@ -312,6 +330,8 @@ pub(super) fn control(
         //   carry no guid, so driving would write one body's pose onto another.
         // Possession is none of these: it runs the ordinary path below, on the creature.
         if player.server_riding || player.control_lost || player.reseat {
+            #[cfg(target_arch = "wasm32")]
+            player.browser_movement.reset_arc();
             // The moving body's transform is the truth; without this the camera stays behind
             // during a fear. Not while reseating, when `Player` still holds the body let go.
             if player.control_lost && !player.reseat {
@@ -566,6 +586,8 @@ pub(super) fn control(
         let mut swim_pitch = 0.0_f32;
         // Pre-step feet Y, the true take-off height: the step already rises one jump tick.
         let launch_y = player.pos.y;
+        #[cfg(target_arch = "wasm32")]
+        let mut browser_fall_time = None;
         let mover::Outcome {
             held,
             grounded,
@@ -604,6 +626,33 @@ pub(super) fn control(
                 player.mover_pitch,
                 surface_y,
             );
+            #[cfg(target_arch = "wasm32")]
+            {
+                let Some((outcome, fall_time)) = browser_movement::step(
+                    &mut player,
+                    &time,
+                    browser_dt,
+                    &collide,
+                    world,
+                    capsule,
+                    browser_movement::Input {
+                        moving,
+                        dir,
+                        speed,
+                        jump: want_jump,
+                        wire_jump,
+                        launch: knock_launch,
+                        water_floor,
+                        nudge_speed: mover_speeds
+                            .map_or(super::AIR_NUDGE_SPEED, |s| s.walk.min(s.run)),
+                    },
+                ) else {
+                    return;
+                };
+                browser_fall_time = fall_time;
+                outcome
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             mover::step(
                 &mut player,
                 &time,
@@ -628,6 +677,10 @@ pub(super) fn control(
         }
 
         let now = time.elapsed_secs();
+        #[cfg(target_arch = "wasm32")]
+        let swimming = player.swimming;
+        #[cfg(target_arch = "wasm32")]
+        browser_movement::finish_frame(&mut player, jumped, swimming);
         // Our FALLING: never while swimming, and a root ends it outright (`SetRoot` `0x7c7340`
         // calls `StopFalling` `0x7c6290`), leaving the body hanging; `grounded` keeps true contact.
         let airborne = !swimming && !held && !player.modes.rooted && (!grounded || jumped);
@@ -659,6 +712,8 @@ pub(super) fn control(
             now,
             launch_y,
         );
+        #[cfg(target_arch = "wasm32")]
+        let wire_fall_time = browser_fall_time.unwrap_or(wire_fall_time);
         let anim_flags = gait::drive_body_heading(
             &mut player,
             pose_flags,
@@ -763,6 +818,10 @@ pub(super) fn control(
 
         // Stream the movement: a `MSG_MOVE_*` per axis transition, the jump and fall edges and a
         // 500 ms heartbeat, which vmangos relays to nearby players.
+        #[cfg(target_arch = "wasm32")]
+        {
+            player.browser_mode_pitch = swim_pitch;
+        }
         let wire_transport = movement_net::wire_transport(&player);
         // A held frame is simulation time skipped; the mover named is the one we drive.
         let skip = movement_net::SkipClock {

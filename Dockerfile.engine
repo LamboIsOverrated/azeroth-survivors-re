@@ -10,9 +10,9 @@ WORKDIR /source
 COPY . .
 ENV CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_DEBUG=0
 RUN scripts/web-setup.sh
-RUN scripts/web-build.sh
+RUN WEB_VARIANT=survivors scripts/web-build.sh
 RUN cargo build --locked --release -p wenilla-host
 
 FROM scratch
-COPY --from=game /source/web/dist /web/dist
+COPY --from=game /source/web/dist-survivors /web/dist
 COPY --from=game /source/target/release/wenilla-host /bin/wenilla-host

@@ -151,6 +151,27 @@ impl WorldWriter {
         )
     }
 
+    /// Browser carry: acknowledge with the actual ride and conditional movement tails intact.
+    #[cfg(target_arch = "wasm32")]
+    pub fn browser_move_mode_ack(
+        &mut self,
+        guid: u64,
+        counter: u32,
+        mode: MoveMode,
+        apply: bool,
+        movement: messages::BrowserModeMovement,
+    ) -> Result<()> {
+        let body = messages::browser_move_mode_ack(
+            guid,
+            counter,
+            mode,
+            apply,
+            client_uptime_ms(),
+            movement,
+        )?;
+        self.send(mode.ack_opcode(apply), &body)
+    }
+
     /// `CMSG_MOVE_KNOCK_BACK_ACK`: our pose at launch, with the server's `launch` echoed as the
     /// jump tail. `flags` must carry `MOVEFLAG_JUMPING` and `launch` must match within 0.01, or
     /// vmangos rejects the ack and observers never see the knockback.

@@ -1,0 +1,104 @@
+# Closed world-owner TEST escrow bridge
+
+This directory contains a **closed source patch and internal TEST outbox**, not production currency activation. The patch targets CMaNGOS Classic **de8f72993b9e1faa1bf92dd5505f3daec5cea3ce** exactly. The pinned-core image has been compiled and its exported binaries exercised in an isolated restored world; the public realm still uses the stock companion core. No public wallet route exposes this outbox. LIVE requests are rejected in both Node and C++ with no enable flag. A CA alone cannot enable this bridge. See [the acceptance record](../../../docs/REALM-ACCEPTANCE.md) for exact build identities, running-world evidence and remaining launch gates.
+
+## What is implemented
+
+The outbox connects the existing persistent TEST account journal to an actual world-owned `characters.money` mutation through a typed, idempotent command. TEST vault units and TEST game units use an explicit 1:1 mapping for this isolated test path; it does not establish a launch-token conversion. The current deployed wallet routes do not expose this outbox.
+
+`new BridgeOutbox({dbPath,phase:'TEST',transport,authorizeCharacter})` opens the same **TEST** SQLite database as `economy/Ledger`. It never reads or writes the settlement engine's `live_*` tables. `authorizeCharacter(accountId,guid)` must come from trusted realm/core data and return exact `{accountId,realmAccountId,guid,moneyUnits,online:false,loading:false}`. Here `accountId` is the authenticated **web/journal owner**; `realmAccountId` is the separate positive u32 `classicrealmd.account.id` that owns `characters.account`. Both must be explicit server-derived identities. A last-saved `online:false` alone does not prove no login is in flight, and the existing character-balance endpoint provides no `loading` authority. The C++ world owner separately enforces the stronger whole-world fence below.
+
+Resolve the mapping through the web service's stored `game_accounts.user_id → game_username` and the game database's `account.username → account.id`; neither the web ID nor the numeric suffix in an ordinary `WR...` username establishes the realm ID. Do not accept a realm ID from the browser. The outbox persists both identities immutably: journal entries, request-key ownership, `get` and `step` use the web ID; the world command and its checked receipt use only the persisted realm ID. A changed mapping rejects a repeated enqueue instead of rebinding its original intent. Recovery through `step` uses the saved mapping even when the resolver is unavailable; `pending()` includes both IDs for the internal worker.
+
+The new TEST outbox uses schema version 2 (`world_bridge_schema`). Any unversioned/legacy outbox, missing counterpart table or unsupported version fails closed before intent changes. There is no automatic migration and no assumption that old account IDs equal realm IDs, even for an empty old table. Preserve the original database and reconcile/drain any old operations using the original reviewed implementation and verified ownership evidence; any migration or new TEST database is a separate explicit operator action. Never drop an outbox or infer an owner to bypass this gate.
+
+`enqueue({accountId,idempotencyKey,guid,units,direction})` accepts `grant` or `debit`, exact positive decimal strings in the Classic cap, and server-derived account/ownership. A grant atomically debits actual TEST journal units and inserts the durable immutable outbox intent; it cannot overdraw or change a reused request key. A debit does not credit the account before a proven world receipt. The expected prior character money comes from the trusted snapshot, never browser input.
+
+`step({accountId,id})` persists `pending`, queries the same operation's world receipt, and submits the same immutable operation only after a checked absence. A valid applied debit credits the TEST journal once. A durable world rejection refunds a reserved grant once. Lost replies, malformed output, conflicting account/amount data, busy world, disabled command, and unknown commit results retain pending funds. Restart/retry reconciles by operation ID, never by guessing from current money. `pending()` is a capped internal recovery listing; an eventual operational worker needs pagination and scheduling. `get()` enforces account ownership. These are internal methods, not authenticated public endpoints.
+
+`worldTransport({url,username,password,fetchImpl})` implements the private SOAP envelope and response decoder. It permits only the fixed typed TEST command grammar, fixed private/loopback URL, no redirect, a timeout, and a 64 KiB response cap. XML faults, DTD/entities, multiple results and malformed receipts fail closed. Credentials must be supplied by a future approved server integration and are never included in an outbox row or command.
+
+## Why the world owner must perform the mutation
+
+At the pin, `Player::SaveToDB()` queues a DELETE/INSERT of the complete character row, including money. A direct Node/MariaDB update can be overwritten by that older queued save or by an online player's later in-memory save. `Database::CommitTransactionDirect()` ignores `SqlTransaction::Execute()`'s result and returns true; `SqlTransaction::Execute()` itself does not check BeginTransaction. Neither is used to acknowledge bridge settlement.
+
+SOAP already queues commands onto `World::ProcessCliCommands()`. That runs after `MapManager::Update()` waits for map workers. The patch registers a console-only `realmbridge` handler with an additional `GetSession()==nullptr` check. For **every apply**, it requires no active/queued sessions, no pending session-add queue and no players in ObjectAccessor. Builds with playerbots or AH bot support reject applies even if their runtime settings are off. This is deliberately a **whole-world maintenance outage for every bridge change**, not an online-player bridge. No target player memory exists to update; newly arriving sessions cannot be processed while the world thread is waiting.
+
+The handler queues a custom operation on the **existing single-writer CharacterDatabase FIFO**, after all previously enqueued saves, then waits without resuming world updates. Its shared promise/completion owns its data across caller timeouts. It uses that writer's `SqlConnection` directly, explicitly disables client auto-reconnect, requires all three affected tables to be InnoDB, and checks Begin/Execute/read-back/Commit. It checks the new queue execution-failure flag; an earlier reported writer failure forbids an acknowledgement.
+
+Before the money transaction, it commits an `realm_bridge_inflight` row in autocommit mode. Inside the transaction it locks that row, checks the immutable request, locks the owned offline character, checks the expected prior money and cap, performs/read-checks the update, and inserts the receipt in the **same InnoDB transaction**. A duplicate operation returns the immutable receipt. Missing character, owner, online, stale, insufficient and cap errors receive durable rejected receipts, rather than an optimistic success. The locking character aggregate always returns a count row: count zero produces a durable `missing-character` rejection and a reserved grant is refunded once. A query error still returns unknown and keeps the fence; it is never inferred to mean deletion.
+
+## Indeterminate commits and the persistent login fence
+
+A failed commit response is not proof of rollback. The inflight row therefore survives until a **checked** result and fence removal. On any indeterminate worker outcome the world stops before processing another session. Patched `World::AddSession_()` denies new sessions whenever a fence exists, its query fails, or a prior queued write reported failure. This gate remains active even when the TEST command enable setting is absent. **The migration is consequently mandatory before running this patched core; missing tables deny logins.**
+
+After restart, a typed `status` operation locks the inflight row. That waits for any earlier transaction holding it to finish, then reads the receipt on the same connection. A receipt proves applied/rejected; checked absence after that locking barrier proves no bridge mutation committed. Only then is the fence removed. Never manually delete an inflight row to get players back online. A lost fence-removal acknowledgement is itself indeterminate and must be reconciled again.
+
+The patch also fixes the pinned SOAP worker's unsynchronized completion booleans: release/acquire publication makes the output buffer and command result visible before the waiting SOAP thread reads them. A browser/HTTP timeout does not cancel a world-owned command or destroy its completion state.
+
+### Read-only login-gate health
+
+The exact console-only command `realmbridge v1 health` returns one line beginning
+`REALM_BRIDGE_HEALTH_V1 ` followed by this bounded JSON contract:
+
+```json
+{"version":1,"loginPermitted":true,"writerFailed":false,"inflightQueryOk":true,"inflight":"0","reason":"ready"}
+```
+
+Health and `LoginPermitted()` use the same read-only gate snapshot. A queued CharacterDatabase
+writer failure is unhealthy even if auth/world/SOAP ports remain open. The count query must
+return exactly one row and field containing a canonical unsigned 64-bit decimal string;
+missing tables, query exceptions, malformed results and nonzero inflight counts deny readiness.
+The writer-failure latch is sampled before and after the read, so a failure during it cannot
+produce a healthy result. `inflightQueryOk:false` always means `inflight:null`; a successful
+query always reports its exact decimal string, including when a writer failure arrived during
+the read. Reason priority is `writer-failed`, `inflight-query-failed`, `inflight-pending`, `ready`.
+
+The command accepts no extra tokens or whitespace suffix, refuses in-game sessions, and works
+with TEST commands disabled and ordinary players online. It changes no money, receipt, fence
+or failure latch, performs no transaction and does not stop the world. It is not a status or
+recovery operation. Consumers must validate the full version/types/count/reason consistency;
+compiled bridge runtimes must fail readiness closed if this command is unavailable or malformed.
+The stock companion runtime remains a separate capability and has no such command.
+
+The observed trigger was a date-dependent weekly-quest reset denied its required table cleanup
+permission: listeners remained healthy while the queued-writer latch denied all new sessions.
+Repair the underlying database/permission error and follow the controlled restart/recovery
+procedure; never treat the health command as a way to clear the latch or an unresolved fence.
+
+## Source artifact, verification and rollout gates
+
+`core/world-bridge.patch` is the reviewable carry. `core/WorldBridge.h` is its readable kernel source; `core/pinned-sources.json` records hashes of all exact original files. `tools/generate-patch.mjs` fetches only that official pinned source into ignored `.audit/`, generates the patch, and checks application. For a clean checkout:
+
+```text
+node deploy/realm/bridge/tools/apply-patch.mjs /path/to/pinned/core
+node deploy/realm/bridge/tools/apply-patch.mjs /path/to/pinned/core --apply
+```
+
+The first command only verifies the revision, clean working tree, source hashes and applicability. The second applies source only, with no database or deployment mutation. A reviewed future rollout must install `core/001-world-bridge.sql` in maintenance, inspect existing InnoDB/durability settings, compile the full pinned core **without bot/AH bot support**, and explicitly set `REALM_BRIDGE_TEST_ENABLE=1` only for private TEST acceptance. An existing earlier schema with `reason VARCHAR(16)` must first apply `core/002-missing-character-reason.sql`; the kernel checks column capacity and fails closed rather than truncate the 17-character rejection reason. There is no LIVE equivalent. Preserve upstream GPL-2.0-or-later attribution and include this patch in shipped source.
+
+`tools/verify-core.sh /clean/pinned/source /separate/build/directory` applies the verified carry and compiles the actual `mangosd` and `realmd` targets with bots/AH bots disabled. It does not start a realm or touch a database. On Debian bookworm the companion build dependencies are `build-essential cmake git ca-certificates libboost-all-dev libmariadb-dev libmariadb-dev-compat libssl-dev zlib1g-dev libbz2-dev`; clone the core recursively and check out the exact revision with pinned submodules before invoking it. The existing pinned runtime image contains only core SQL/contrib under `/opt/src/mangos-classic`, not compilable source or a toolchain. The original source build entry is `deploy/realm/core/build-source.sh`, but its companion flags enable bots and must not be mistaken for this bridge acceptance build. No CMake source-list change is needed: the new header is included by the existing Level3.cpp and World.cpp translation units.
+
+Verification includes exact-pinned patch application, the C++ transaction fault model, file-backed Node SQLite/response-loss tests, full pinned-core container compilation and actual image ABI/source/runtime smoke. The separate MariaDB drill below uses real InnoDB. The actual exported world binary also passed typed grant/debit replay and rejection checks, a whole-world online guard, CharacterDatabase FIFO lock interruption, persistent login refusal after restart, matching typed status recovery, and normal login/logout afterward in a private clone. A deliberately dropped application HTTP reply reconciled to one durable application. These are distinct layers of evidence: the model is not MariaDB, the CI MariaDB adapter is not a World process, and application response loss is not physically interrupted COMMIT acknowledgement. The patch has not replaced the public live core. Complete protected-browser gameplay, controlled rollout and funded stock gameplay integration remain separate gates.
+
+The bridge carry also corrects pinned `realmd`'s declared-but-ignored version option. It now prints the version and exits successfully immediately after argument validation, before configuration, daemon or database work. `tools/check_realmd_cli.py source-tree` compiles the **actual source CLI prefix** against real Boost with a startup sentinel; version requests, including explicit config/daemon arguments, must return0 before that sentinel, while normal startup and invalid-option handling retain their stock paths. `--expect-legacy` reproduces the old missing-handler baseline before applying the patch. CI's full binary smoke separately exercises the built realmd with generated arguments; this verifies CLI behavior and configuration rendering, not a database-backed server startup.
+
+Run Node checks with `node --test deploy/realm/bridge/tests/*.test.mjs`. On Linux compile the kernel harness with `g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test` and execute it. The equivalent MSVC C++17 harness passed locally.
+
+## LIVE work still required
+
+Every positive game issuance must be backed before any game balance becomes redeemable: character creation/start money, quest and loot income, sales, mail/auction flows, scripted/GM grants, refunds and every other money-changing path need a complete issuance/reserve policy and audit. The inherited TEST world does not satisfy that policy. This code does not convert TEST characters, items or money into live claims. The live settlement engine remains separate and public deposit/withdraw endpoints stay disabled.
+
+Further gates include immutable mint/game-unit conversion, funded reserve and fee accounts, approved signing/custody, a live vault↔world reservation journal that cannot import TEST funds, audit of every world write/memory/queue path, an online-player fence or acceptance of the maintenance-only limitation, durable worker scheduling, authentication/CSRF/user confirmation, request limits, DB privileges/durability, backup/restore drills, real disconnect/commit fault tests and independent source/security review. Supply of a CA does not fulfill these gates.
+
+## CI image and database acceptance
+
+`.github/workflows/realm-bridge.yml` builds wallet assets before runtime tests so clean checkouts do not depend on ignored local bundles. It runs Node, the C++ fault model and Python safety checks, then exercises the same C++ kernel against an ephemeral pinned MariaDB service before building `Dockerfile.bridge`. The Docker build is the full pinned core compile, avoiding a second separate native compile. No image is pushed or deployed by this workflow. Changes under `core/**` also trigger its PR checks so later core policy carries are covered.
+
+`tests/cpp/mariadb-bridge.test.cpp` uses the exact kernel through a small test `SqlConnection` adapter backed by the real MariaDB C client. It creates a **new** `realm_bridge_ci_*` database and refuses to reuse an existing one. Its endpoint is hardcoded loopback port3306, requires `BRIDGE_CI_SCRATCH=1`, `BRIDGE_CI_DB_PASSWORD`, `BRIDGE_CI_DATABASE` and `BRIDGE_CI_SCHEMA`, and drops only the newly created scratch database. It is not an operations command and must never be pointed at a live database via a tunnel. Scenarios cover real update/query/receipt errors with rollback, committed money with a deliberately lost acknowledgement, actual server `KILL CONNECTION` before commit, replay, deletion, and a concurrent status lookup blocked behind an actual InnoDB fence lock. The killed-connection and committed-but-lost-reply cases are separate: no claim is made that the exact physical timing of an interrupted COMMIT acknowledgement is deterministic.
+
+Compile that CI-only drill with `g++ -std=c++17 -O2 -pthread -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/mariadb-bridge.test.cpp $(pkg-config --cflags --libs libmariadb) -o /tmp/mariadb-bridge-test`. It does not link or execute the full CMaNGOS world, session or FIFO code; the separate actual restored-world drill is recorded in the acceptance document rather than inferred from this fixture.
+
+After the image builds, `tools/smoke-image.sh local-image-tag` runs the actual binaries/runtime with Docker networking disabled. `tools/verify-image.py` checks linker dependencies, the conditional playerbot CLI, declared disabled bot/bridge capabilities, matching source-patch/kernel checksums, pinned base revision and accompanying upstream license/authors in the source archive. At this pin the AH configuration argument is listed unconditionally, so its presence cannot prove AH scheduling was compiled in; that policy follows the reviewed build flag and runtime checks. The auth binary supports `--version`, while world `--help` supplies the conditional playerbot options. It reads archive members without extracting paths. The existing image's `smoke_runtime.py` then verifies real configuration/CLI parsing and maintenance HTTP behavior with no SQL, game assets or child core processes. Python fixtures test rejection of old kernel packages, wrong pins, omitted licenses and missing/mismatched expected checksums. These scripts are gates, not evidence of success until their run has actually passed on the target commit/image.
+
+Only after those image checks pass, `tools/export-image.sh local-image-tag new-artifact-directory` exports the **same tested image's** realmd/mangosd, resolved shared libraries/loader, public `.dist` templates, runtime source and corresponding patched GPL source/license package. Its output is a code-only `realm-core-bridge.tar.gz`, a per-file SHA256/size `manifest.json` identifying the exact repository commit and image ID, and `SHA256SUMS`. It never reads `/config`, `/realm-data`, account state or environment dumps. CI uploads the bundle as `realm-bridge-linux-<commit>` for 14 days; it does not start or deploy that bundle. Validate the trusted Actions artifact identity and all checksums before staging into a **new sibling directory** in an authorized isolated environment. Do not overwrite stock binaries, system libraries, configurations, databases or assets. Any use of the bundled loader/libraries and actual running-world/FIFO/movement acceptance requires that separate controlled staging step. A new image build after a source change must produce and verify a new bundle; a prior artifact is not evidence for a later commit.

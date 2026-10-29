@@ -1,0 +1,17 @@
+{
+  "revision": "de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "files": {
+    "src/shared/Database/Database.h": "8c22ee02c683efcdbfb93001d216dfeb326651cc95193c9f4f9b3299747a3b46",
+    "src/shared/Database/Database.cpp": "588c36a1c16b5d961a5ebc6e793c54316418115732d47bf74c0593fe707feae6",
+    "src/shared/Database/DatabaseMysql.h": "a216136ba194c6021ea1b398edc3b37596a845c0981756311da860d504797526",
+    "src/shared/Database/SqlDelayThread.h": "16ea364efe279f06283aa5b4e7026ae65fa98f597b485ffbb89fcff1f5d7d046",
+    "src/shared/Database/SqlDelayThread.cpp": "f0b486fd27c8d7bb95d55ad5a0f2b886c3853716f2179015ee6c1adf07dbc86b",
+    "src/game/Chat/Chat.h": "236dffacbca499efa908280fc9711ee18cb1e181537c38fca04b2175d9907284",
+    "src/game/Chat/Chat.cpp": "de77fe8153a307c3e5d187ee18af2109c93c38b1cf491258a9c51999b1c97147",
+    "src/game/Chat/Level3.cpp": "2dc12faad03e5b027c4e41566aa7b88f4109c75a8111e14bcecee35633d09bf6",
+    "src/game/World/World.cpp": "b61884f2a30065da8179ae38a7534ac017327f9a01c035281c55ad389f78f13c",
+    "src/game/World/World.h": "3fa53d2883533f4d205c9aeaf13af224670d12f5e623cc1fd79dc9eca4de16a3",
+    "src/mangosd/MaNGOSsoap.cpp": "f5a3a8779fbdef97589948a9741dc6ca14f28f88a3c715e09139fd199560bce7",
+    "src/realmd/Main.cpp": "de28d327c211c3dbd20134bf852200e1cd9efa721c0011683484495aba2cabae"
+  }
+}

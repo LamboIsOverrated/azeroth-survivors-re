@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "core": "de8f72993b9e1faa1bf92dd5505f3daec5cea3ce",
+  "extractor_image": "ghcr.io/arnesen/wenilla-realm-mangos@sha256:837e0cb76f8c95f209ba8d53fd5de7c8deced8fd8908b532ed2cc34e393b8348",
+  "architecture": "linux-amd64",
+  "inputs": [
+    [
+      "Data/backup.MPQ",
+      6341628,
+      "5f95175d6046827bbd46ec207a78032a9279fbcf4163c308fb73655f537ff26a"
+    ],
+    [
+      "Data/base.MPQ",
+      11202638,
+      "8664981b6ae6f43ad2c2a3670e7b92fb6765da200b427a7e57e03c5cb5645241"
+    ],
+    [
+      "Data/dbc.MPQ",
+      3875834,
+      "a37649169842347ae37a270f49b005a95e184f5ba3d2c1d2d16f37ea2bb902e4"
+    ],
+    [
+      "Data/fonts.MPQ",
+      1284223,
+      "0e8a8121f40ff27dad6beba63a83b708c753762c898420a674a74987a6e31522"
+    ],
+    [
+      "Data/interface.MPQ",
+      69655328,
+      "9ac598e8c1595f0c50276860936956e6196ef5f041de13db79a5d75b6be99105"
+    ],
+    [
+      "Data/misc.MPQ",
+      6084832,
+      "59c4138eefb00f6e640667cd7d16decaec4b2048ee17dc4f58195bd93d7c6a60"
+    ],
+    [
+      "Data/model.MPQ",
+      190911084,
+      "d8f168e2d346a113076e5b100296cc8f77cc74db2f85e16d25052bc5fc59b639"
+    ],
+    [
+      "Data/patch-2.MPQ",
+      9597162,
+      "0991580c474caf7e70e187447829ce1deec8e65ea8654d9a275050b6934665ca"
+    ],
+    [
+      "Data/patch.MPQ",
+      2055856542,
+      "5fe80699e8d6de05a2c76bb63a523bbf53761cc1ddf528c77a755324d8476ec1"
+    ],
+    [
+      "Data/sound.MPQ",
+      707653955,
+      "7ccbaef51dd998366d5d71b5d702caef9518e415066fb94d7c503fe07deda4cb"
+    ],
+    [
+      "Data/speech.MPQ",
+      229168847,
+      "1759231dfb0427d4ad48d6cde23623df8eb3e35f8bf8b40ed2abbb89005be6dd"
+    ],
+    [
+      "Data/terrain.MPQ",
+      1099777804,
+      "4ca9cb8ebc40027f15168fbc2f311d4420f5c628f1327e4317087febae1aa638"
+    ],
+    [
+      "Data/texture.MPQ",
+      664940439,
+      "5768dc52b2e59f6854e3c30812644af86d1834d60b2d5970860cea893c0c4c07"
+    ],
+    [
+      "Data/wmo.MPQ",
+      363565077,
+      "00d40ff633cd71ab60f20833a06b18e9638132227c8c1d2bc509c905e51552ce"
+    ]
+  ],
+  "tools": {
+    "ad": "37c88cac3a423d75bbe45a95fc01b0fe146623b2541727b282d9d8485b9a91dd",
+    "vmap_extractor": "8aba347b97ba16afbe845e03d1031ee9c2df32dd938be31ed5f959b921de61c7",
+    "vmap_assembler": "7729aca48bb91368884e2df43a945bb251b84b3c448c3b01869db2626d18e8a5",
+    "MoveMapGen": "efe722a6ef306477e45e7f39c117aabc04c6c0d825f562c365bf3907cbbb282a",
+    "offmesh.txt": "f4fa20bb5d3b2968cae640ba6868c894af691723490e401e508bb4472c366a5d",
+    "@config": "b1674c25cd4f7feabbdf915d399c83776f9f634f9ffa31154c6214320cd672d4"
+  },
+  "outputs": {
+    "count": 10273,
+    "bytes": 2322924825,
+    "sha256": "b3f32d33c91ce23c05fc1efeb021bc78c8bf7f68f765b159dda754ae59d02e15"
+  }
+}

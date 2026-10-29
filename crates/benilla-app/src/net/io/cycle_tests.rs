@@ -145,14 +145,19 @@ fn send(s: &mut TcpStream, crypto: Option<&mut HeaderCrypto>, op: u16, body: &[u
 
 /// A client packet's opcode, reading past its body: `u16` BE size counting the 4-byte opcode.
 fn recv(s: &mut TcpStream, crypto: Option<&mut HeaderCrypto>) -> Option<u16> {
+    recv_packet(s, crypto).map(|(op, _)| op)
+}
+
+fn recv_packet(s: &mut TcpStream, crypto: Option<&mut HeaderCrypto>) -> Option<(u16, Vec<u8>)> {
     let mut header = [0u8; 6];
     s.read_exact(&mut header).ok()?;
     if let Some(c) = crypto {
         c.decrypter().decrypt(&mut header);
     }
     let size = usize::from(u16::from_be_bytes([header[0], header[1]]));
-    s.read_exact(&mut vec![0u8; size.saturating_sub(4)]).ok()?;
-    Some(u16::from_le_bytes([header[2], header[3]]))
+    let mut body = vec![0u8; size.saturating_sub(4)];
+    s.read_exact(&mut body).ok()?;
+    Some((u16::from_le_bytes([header[2], header[3]]), body))
 }
 
 /// A world server whose account has no characters: it admits the session under realmd's key,
@@ -161,6 +166,23 @@ fn recv(s: &mut TcpStream, crypto: Option<&mut HeaderCrypto>) -> Option<u16> {
 fn fake_world(
     listener: TcpListener,
     keys: Receiver<[u8; SESSION_KEY_LENGTH]>,
+) -> Arc<Mutex<Vec<u16>>> {
+    fake_world_with_idle(listener, keys, None)
+}
+
+fn fake_world_with_idle(
+    listener: TcpListener,
+    keys: Receiver<[u8; SESSION_KEY_LENGTH]>,
+    idle: Option<Duration>,
+) -> Arc<Mutex<Vec<u16>>> {
+    fake_world_with_behavior(listener, keys, idle, false)
+}
+
+fn fake_world_with_behavior(
+    listener: TcpListener,
+    keys: Receiver<[u8; SESSION_KEY_LENGTH]>,
+    idle: Option<Duration>,
+    close_on_entry: bool,
 ) -> Arc<Mutex<Vec<u16>>> {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&sent);
@@ -180,9 +202,12 @@ fn fake_world(
             opcode::SMSG_AUTH_RESPONSE,
             &[messages::AUTH_OK],
         );
-        while let Some(op) = recv(&mut s, Some(&mut crypto)) {
+        s.set_read_timeout(idle).unwrap();
+        while let Some((op, body)) = recv_packet(&mut s, Some(&mut crypto)) {
             log.lock().unwrap().push(op);
             match op {
+                opcode::CMSG_PLAYER_LOGIN if close_on_entry => return,
+                opcode::CMSG_PING => send(&mut s, Some(&mut crypto), opcode::SMSG_PONG, &body[..4]),
                 opcode::CMSG_CHAR_ENUM => {
                     send(&mut s, Some(&mut crypto), opcode::SMSG_CHAR_ENUM, &[0]);
                 }
@@ -275,4 +300,156 @@ fn an_empty_account_parks_at_select_without_creating_a_character() {
         !sent.contains(&opcode::CMSG_CHAR_CREATE),
         "the login sent CMSG_CHAR_CREATE on its own: {sent:#06x?}"
     );
+}
+
+/// The public relay expires a world socket after 120 seconds with no browser frames.
+/// The shortened deadline here exercises the same failure with the real encrypted protocol.
+#[test]
+fn parked_keepalives_survive_idle_deadline_and_buffered_pongs_do_not_break_create() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let world = listener.local_addr().unwrap().to_string();
+    let (keys_tx, keys_rx) = crossbeam_channel::unbounded();
+    let sent = fake_world_with_idle(listener, keys_rx, Some(Duration::from_secs(1)));
+    let realmd = fake_realmd(world, keys_tx);
+    let (events_tx, events) = crossbeam_channel::unbounded();
+    let (writer_tx, _writer_rx) = crossbeam_channel::unbounded::<WorldWriter>();
+    let (login_tx, login_rx) = async_channel::unbounded();
+    let (realm_tx, realm_rx) = async_channel::unbounded();
+    let (pick_tx, pick_rx) = async_channel::unbounded();
+    let cycle = thread::spawn(move || {
+        futures_lite::future::block_on(run(
+            &events_tx,
+            &writer_tx,
+            &Parks {
+                login_rx,
+                realm_rx,
+                pick_rx,
+            },
+            &AtomicU64::new(0),
+            &Mutex::new(PingClock::default()),
+            &mut Default::default(),
+        ))
+    });
+    login_tx
+        .send_blocking(LoginRequest {
+            user: USER.into(),
+            pass: PASS.into(),
+            host: realmd,
+            generation: 0,
+        })
+        .unwrap();
+    assert!(matches!(
+        next_event(&events),
+        SessionEvent::RealmList { .. }
+    ));
+    realm_tx
+        .send_blocking(RealmRequest::Enter(REALM.into()))
+        .unwrap();
+    assert!(matches!(
+        next_event(&events),
+        SessionEvent::CharacterList { .. }
+    ));
+    for _ in 0..5 {
+        thread::sleep(Duration::from_millis(250));
+        pick_tx.send_blocking(CharRequest::KeepAlive).unwrap();
+    }
+    pick_tx
+        .send_blocking(CharRequest::Create(messages::CharCreateReq {
+            name: "Idlefixture".into(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            skin: 0,
+            face: 0,
+            hair_style: 0,
+            hair_color: 0,
+            facial_hair: 0,
+        }))
+        .unwrap();
+    assert!(
+        matches!(next_event(&events), SessionEvent::CharacterList { .. }),
+        "the live connection must refresh its roster after buffered PONGs"
+    );
+    assert!(matches!(
+        next_event(&events),
+        SessionEvent::CharActionResult {
+            action: benilla_protocol::CharAction::Create,
+            code: messages::CHAR_CREATE_SUCCESS
+        }
+    ));
+    pick_tx.send_blocking(CharRequest::Abandon).unwrap();
+    assert!(matches!(cycle.join().unwrap(), Ok(Cycle::Repark)));
+    assert_eq!(
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter(|op| **op == opcode::CMSG_PING)
+            .count(),
+        5
+    );
+}
+
+/// Keepalives must not turn a socket loss into account takeover. Compile the real outer
+/// sequencer and assert its post-entry close still produces Lost and returns to the login park.
+#[test]
+fn a_post_entry_socket_close_still_emits_lost_and_parks() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let world = listener.local_addr().unwrap().to_string();
+    let (keys_tx, keys_rx) = crossbeam_channel::unbounded();
+    fake_world_with_behavior(listener, keys_rx, None, true);
+    let realmd = fake_realmd(world, keys_tx);
+    let (events_tx, events) = crossbeam_channel::unbounded();
+    let (writer_tx, _writer_rx) = crossbeam_channel::unbounded::<WorldWriter>();
+    let (login_tx, login_rx) = async_channel::unbounded();
+    let (realm_tx, realm_rx) = async_channel::unbounded();
+    let (pick_tx, pick_rx) = async_channel::unbounded();
+    let sequencer = thread::spawn(move || {
+        futures_lite::future::block_on(super::sequencer(
+            events_tx,
+            writer_tx,
+            Parks {
+                login_rx,
+                realm_rx,
+                pick_rx,
+            },
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Mutex::new(PingClock::default())),
+        ))
+    });
+    login_tx
+        .send_blocking(LoginRequest {
+            user: USER.into(),
+            pass: PASS.into(),
+            host: realmd,
+            generation: 0,
+        })
+        .unwrap();
+    assert!(matches!(
+        next_event(&events),
+        SessionEvent::RealmList { .. }
+    ));
+    realm_tx
+        .send_blocking(RealmRequest::Enter(REALM.into()))
+        .unwrap();
+    assert!(matches!(
+        next_event(&events),
+        SessionEvent::CharacterList { .. }
+    ));
+    pick_tx.send_blocking(CharRequest::Enter(1)).unwrap();
+    loop {
+        match next_event(&events) {
+            SessionEvent::Connected { .. } => continue,
+            SessionEvent::Disconnected {
+                end: benilla_protocol::SessionEnd::Lost,
+                ..
+            } => break,
+            other => panic!("unexpected entry event: {other:?}"),
+        }
+    }
+    assert!(
+        events.recv_timeout(Duration::from_millis(100)).is_err(),
+        "the sequencer must remain parked rather than reauthenticate"
+    );
+    drop(login_tx);
+    sequencer.join().unwrap();
 }

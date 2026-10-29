@@ -1,0 +1,19 @@
+[package]
+name = "wenilla-io-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+async-channel = "2.5"
+benilla-protocol = { path = "../../../benilla-protocol" }
+benilla-srp = { path = "../../../benilla-srp" }
+crossbeam-channel = "0.5"
+futures-lite = "2.6.1"
+num-bigint = "0.4.6"
+sha1 = "0.10"
+tracing = "0.1"
+web-time = "1"

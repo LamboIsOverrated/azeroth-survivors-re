@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "isolated": false,
+  "auth": "127.0.0.1:13724",
+  "world": "127.0.0.1:18085",
+  "database_prefix": "movementqa_PRIVATE_",
+  "source_commit": "REPLACE_WITH_ACTUAL_40_HEX_SOURCE_COMMIT",
+  "image_digest": "REPLACE_WITH_ACTUAL_64_HEX_IMAGE_DIGEST",
+  "primary": {
+    "user": "MOVEQAONE",
+    "character": "Moveqaone",
+    "security": 0
+  },
+  "observer": {
+    "user": "MOVEQATWO",
+    "character": "Moveqatwo",
+    "security": 0
+  },
+  "create_missing_characters": false,
+  "map": 0,
+  "origin": [
+    0,
+    0,
+    0
+  ],
+  "orientation": 0,
+  "steps": [
+    {
+      "name": "ordinary-ground-forward",
+      "delay_ms": 300,
+      "opcode": 181,
+      "flags": 1,
+      "offset": [
+        0.5,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "ordinary-ground-stop",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "excess-distance",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 1,
+      "offset": [
+        39,
+        0,
+        0
+      ],
+      "accept": false
+    },
+    {
+      "name": "recover-after-distance",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "forged-high-z",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        10
+      ],
+      "accept": false
+    },
+    {
+      "name": "recover-after-high-z",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "unauthorized-flight",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 2048,
+      "offset": [
+        0,
+        0.3,
+        0
+      ],
+      "accept": false,
+      "clear_flags": 2048
+    },
+    {
+      "name": "recover-after-flight",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "unauthorized-can-fly",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 8388608,
+      "offset": [
+        0,
+        0.6,
+        0
+      ],
+      "accept": false,
+      "clear_flags": 8388608
+    },
+    {
+      "name": "recover-after-can-fly",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "unauthorized-levitation",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 1024,
+      "offset": [
+        0,
+        0.9,
+        0
+      ],
+      "accept": false,
+      "clear_flags": 1024
+    },
+    {
+      "name": "recover-after-levitation",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "unauthorized-waterwalk",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 268435456,
+      "offset": [
+        0,
+        -0.3,
+        0
+      ],
+      "accept": false,
+      "clear_flags": 268435456
+    },
+    {
+      "name": "recover-after-waterwalk",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    },
+    {
+      "name": "unknown-transport",
+      "delay_ms": 100,
+      "opcode": 238,
+      "flags": 33554432,
+      "transport": 18446462598732840961,
+      "offset": [
+        0.3,
+        0.3,
+        0
+      ],
+      "accept": false
+    },
+    {
+      "name": "recover-after-transport",
+      "delay_ms": 300,
+      "opcode": 183,
+      "flags": 0,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "accept": true
+    }
+  ]
+}

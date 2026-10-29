@@ -1,0 +1,401 @@
+//! Cookie sessions: a random token in `wr_session`, its SHA-256 in the `sessions` table. The
+//! same session gates the HTML pages, the JSON API, and — via `require_session` layered over
+//! wenilla-host's routers — `/data/*`, `/ws/*` and the wasm files, so nothing the game needs is
+//! reachable without a login.
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use axum::extract::{FromRequestParts, Request, State};
+use axum::http::request::Parts;
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect, Response};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use base64::Engine;
+use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
+
+use crate::db::now;
+use crate::AppState;
+
+pub const COOKIE: &str = "wr_session";
+const MAX_AGE_SECS: i64 = 30 * 24 * 3600;
+const ROTATE_AFTER_SECS: i64 = 24 * 3600;
+const ROTATION_GRACE_SECS: i64 = 60;
+const TOUCH_EVERY_SECS: i64 = 5 * 60;
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct User {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub disabled: i64,
+}
+
+impl User {
+    pub fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+}
+
+/// The authenticated caller, inserted into request extensions by [`require_session`] and
+/// extractable from any handler behind it.
+#[derive(Clone, Debug)]
+pub struct Session {
+    pub id: i64,
+    pub user: User,
+    pub csrf_token: String,
+    /// Set when the token was rotated during this request — the response must re-set the cookie.
+    pub fresh_token: Option<String>,
+    /// The user still holds the password an admin issued them. [`require_session`] lets such a
+    /// session reach [`PASSWORD_CHANGE_PATH`] and nothing else.
+    pub must_change_password: bool,
+}
+
+/// The only path a session that still owes a password change may reach.
+pub const PASSWORD_CHANGE_PATH: &str = "/account/password";
+
+impl<S: Send + Sync> FromRequestParts<S> for Session {
+    type Rejection = Response;
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<Session>()
+            .cloned()
+            .ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())
+    }
+}
+
+fn hash(token: &str) -> Vec<u8> {
+    Sha256::digest(token.as_bytes()).to_vec()
+}
+
+fn new_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Create a session for `user_id`; returns the cookie token.
+pub async fn create(
+    db: &SqlitePool,
+    user_id: i64,
+    ip: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<String> {
+    let token = new_token();
+    let t = now();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, csrf_token, created_at, rotated_at, last_seen, expires_at, ip, user_agent) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(hash(&token))
+    .bind(user_id)
+    .bind(new_token())
+    .bind(t)
+    .bind(t)
+    .bind(t)
+    .bind(t + MAX_AGE_SECS)
+    .bind(ip)
+    .bind(user_agent.map(|u| u.chars().take(200).collect::<String>()))
+    .execute(db)
+    .await?;
+    Ok(token)
+}
+
+/// A verified password login must still match the credential at session creation time.
+pub async fn create_for_password(
+    db: &SqlitePool,
+    user_id: i64,
+    expected_hash: &str,
+    ip: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<Option<String>> {
+    let token = new_token();
+    let t = now();
+    let inserted = sqlx::query("INSERT INTO sessions (token_hash,user_id,csrf_token,created_at,rotated_at,last_seen,expires_at,ip,user_agent) \
+        SELECT ?,u.id,?,?,?,?,?,?,? FROM users u JOIN local_credentials c ON c.user_id=u.id \
+        WHERE u.id=? AND u.disabled=0 AND c.password_hash=? \
+        AND (c.must_change=0 OR c.expires_at IS NULL OR c.expires_at>?)")
+        .bind(hash(&token)).bind(new_token()).bind(t).bind(t).bind(t).bind(t+MAX_AGE_SECS)
+        .bind(ip).bind(user_agent.map(|a| a.chars().take(200).collect::<String>()))
+        .bind(user_id).bind(expected_hash).bind(t).execute(db).await?;
+    Ok((inserted.rows_affected() == 1).then_some(token))
+}
+
+/// Replace every old session inside the credential-change transaction. No previous-token
+/// grace survives this security boundary, and the replacement gets a fresh CSRF nonce.
+pub(crate) async fn replace_password_session(
+    conn: &mut sqlx::SqliteConnection,
+    current: &Session,
+) -> Result<String> {
+    let token = new_token();
+    let t = now();
+    let inserted = sqlx::query("INSERT INTO sessions (token_hash,user_id,csrf_token,created_at,rotated_at,last_seen,expires_at,ip,user_agent) \
+        SELECT ?,user_id,?,?,?,?,?,ip,user_agent FROM sessions WHERE id=? AND user_id=? AND csrf_token=? AND expires_at>?")
+        .bind(hash(&token)).bind(new_token()).bind(t).bind(t).bind(t).bind(t+MAX_AGE_SECS)
+        .bind(current.id).bind(current.user.id).bind(&current.csrf_token).bind(t).execute(&mut *conn).await?;
+    anyhow::ensure!(
+        inserted.rows_affected() == 1,
+        "password change session no longer exists"
+    );
+    sqlx::query("DELETE FROM sessions WHERE user_id=? AND token_hash<>?")
+        .bind(current.user.id)
+        .bind(hash(&token))
+        .execute(conn)
+        .await?;
+    Ok(token)
+}
+
+pub async fn delete_by_token(db: &SqlitePool, token: &str) -> Result<()> {
+    sqlx::query("DELETE FROM sessions WHERE token_hash = ? OR (previous_token_hash = ? AND previous_valid_until > ?)")
+        .bind(hash(token))
+        .bind(hash(token))
+        .bind(now())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Kill every session of a user — on disable, delete, or password change.
+pub async fn delete_for_user(db: &SqlitePool, user_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Validate an established socket by stable session identity, independent of cookie rotation.
+pub async fn still_valid(db: &SqlitePool, id: i64, user_id: i64, csrf_token: &str) -> Result<bool> {
+    // The nonce is stable across cookie rotation and unique when SQLite reuses a deleted id.
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id \
+         LEFT JOIN local_credentials c ON c.user_id = u.id \
+         WHERE s.id = ? AND s.user_id = ? AND s.csrf_token = ? AND s.expires_at > ? \
+         AND u.disabled = 0 AND COALESCE(c.must_change, 0) = 0)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(csrf_token)
+    .bind(now())
+    .fetch_one(db)
+    .await?)
+}
+
+/// Resolve a cookie token to a live session, touching/rotating it as a side effect.
+pub async fn lookup(db: &SqlitePool, token: &str) -> Result<Option<Session>> {
+    let t = now();
+    #[derive(sqlx::FromRow)]
+    struct Lookup {
+        id: i64,
+        user_id: i64,
+        csrf_token: String,
+        rotated_at: i64,
+        last_seen: i64,
+        username: String,
+        display_name: String,
+        role: String,
+        disabled: i64,
+        must_change: i64,
+    }
+    let token_hash = hash(token);
+    let row: Option<Lookup> = sqlx::query_as(
+        "SELECT s.id, s.user_id, s.csrf_token, s.rotated_at, s.last_seen, \
+         u.username, u.display_name, u.role, u.disabled, COALESCE(c.must_change, 0) AS must_change \
+         FROM sessions s JOIN users u ON u.id = s.user_id \
+         LEFT JOIN local_credentials c ON c.user_id = u.id \
+         WHERE (s.token_hash = ? OR (s.previous_token_hash = ? AND s.previous_valid_until > ?)) \
+         AND s.expires_at > ? AND u.disabled = 0",
+    )
+    .bind(&token_hash)
+    .bind(&token_hash)
+    .bind(t)
+    .bind(t)
+    .fetch_optional(db)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let Lookup {
+        id,
+        user_id,
+        csrf_token,
+        rotated_at,
+        last_seen,
+        username,
+        display_name,
+        role,
+        disabled,
+        must_change,
+    } = row;
+    let user = User {
+        id: user_id,
+        username,
+        display_name,
+        role,
+        disabled,
+    };
+    let mut fresh_token = None;
+    if t - rotated_at > ROTATE_AFTER_SECS {
+        let token = new_token();
+        // Compare-and-swap: concurrent old-token requests may authenticate, but only
+        // the winner sends a cookie. A later response cannot overwrite it with a loser.
+        let updated = sqlx::query("UPDATE sessions SET previous_token_hash = token_hash, previous_valid_until = ?, token_hash = ?, rotated_at = ?, last_seen = ?, expires_at = ? WHERE id = ? AND token_hash = ? AND rotated_at = ?")
+            .bind(t + ROTATION_GRACE_SECS)
+            .bind(hash(&token))
+            .bind(t)
+            .bind(t)
+            .bind(t + MAX_AGE_SECS)
+            .bind(id)
+            .bind(&token_hash)
+            .bind(rotated_at)
+            .execute(db)
+            .await?;
+        if updated.rows_affected() == 1 {
+            fresh_token = Some(token);
+        }
+    } else if t - last_seen > TOUCH_EVERY_SECS {
+        sqlx::query("UPDATE sessions SET last_seen = ? WHERE id = ?")
+            .bind(t)
+            .bind(id)
+            .execute(db)
+            .await?;
+    }
+    Ok(Some(Session {
+        id,
+        user,
+        csrf_token,
+        fresh_token,
+        must_change_password: must_change != 0,
+    }))
+}
+
+pub fn cookie<'a>(token: String, secure: bool) -> Cookie<'a> {
+    Cookie::build((COOKIE, token))
+        .path("/")
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Lax)
+        .max_age(time::Duration::seconds(MAX_AGE_SECS))
+        .build()
+}
+
+pub fn removal_cookie<'a>() -> Cookie<'a> {
+    Cookie::build((COOKIE, ""))
+        .path("/")
+        .max_age(time::Duration::ZERO)
+        .build()
+}
+
+/// Peer address as Caddy reports it. Only Caddy can reach this service, so the header is trusted.
+pub fn client_ip(parts: &axum::http::HeaderMap) -> Option<String> {
+    parts
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Is this a request for a page (redirect to `/login` on failure) or for an asset/API (401)?
+fn wants_html(req: &Request) -> bool {
+    let p = req.uri().path();
+    if p.starts_with("/data/") || p.starts_with("/ws/") || p.starts_with("/api/") {
+        return false;
+    }
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|a| a.contains("text/html"))
+        .unwrap_or(false)
+}
+
+fn unauthorized(req: &Request) -> Response {
+    if wants_html(req) {
+        Redirect::to("/login").into_response()
+    } else {
+        let mut r = StatusCode::UNAUTHORIZED.into_response();
+        r.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        r
+    }
+}
+
+fn must_change_first(req: &Request) -> Response {
+    if wants_html(req) {
+        Redirect::to(PASSWORD_CHANGE_PATH).into_response()
+    } else {
+        let mut r = (
+            StatusCode::FORBIDDEN,
+            "change your web password before playing",
+        )
+            .into_response();
+        r.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        r
+    }
+}
+
+/// Middleware: require a live session; inserts [`Session`] into extensions.
+///
+/// It also enforces the forced password change, and does so *here* rather than in a layer of its
+/// own: this middleware is what every route needing a login already goes through, so a route
+/// cannot be added that forgets the gate. Before, `must_change` only chose the redirect target
+/// after login — a player who ignored it could open `/`, `/api/play`, `/data/*` and `/ws/*` and
+/// play indefinitely on the password an admin had handed them.
+pub async fn require_session(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let Some(token) = jar.get(COOKIE).map(|c| c.value().to_string()) else {
+        return unauthorized(&req);
+    };
+    let session = match lookup(&state.db, &token).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return unauthorized(&req),
+        Err(e) => {
+            tracing::error!(error = %e, "session lookup");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let fresh = session.fresh_token.clone();
+    let mut resp = if session.must_change_password && req.uri().path() != PASSWORD_CHANGE_PATH {
+        must_change_first(&req)
+    } else {
+        req.extensions_mut().insert(session);
+        next.run(req).await
+    };
+    let replaced_cookie = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.starts_with("wr_session="))
+        });
+    if let Some(token) = fresh.filter(|_| !replaced_cookie) {
+        let c = cookie(token, !state.cfg.cookie_insecure);
+        if let Ok(v) = HeaderValue::from_str(&c.to_string()) {
+            resp.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    resp.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Cookie"));
+    resp
+}
+
+/// Middleware (behind `require_session`): admins only.
+pub async fn require_admin(req: Request, next: Next) -> Response {
+    match req.extensions().get::<Session>() {
+        Some(s) if s.user.is_admin() => next.run(req).await,
+        Some(_) => StatusCode::FORBIDDEN.into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}

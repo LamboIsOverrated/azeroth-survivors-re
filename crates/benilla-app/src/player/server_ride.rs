@@ -81,6 +81,16 @@ pub(super) fn drive_self_ride(
         With<Embodied>,
     >,
 ) {
+    // A just-arrived handoff must not finish the prior body's spline before wire_in handles it.
+    // Keep the completion marker intact while entry or the current control transition waits.
+    #[cfg(target_arch = "wasm32")]
+    if player.reseat
+        || !player
+            .browser_entry
+            .can_report(player.foreign_mover.or(player.browser_entry.self_guid()))
+    {
+        return;
+    }
     // Only while we hold control; a free-fly detach abandons the ride (the server still ends it).
     if !player.active || player.detached {
         player.server_riding = false;

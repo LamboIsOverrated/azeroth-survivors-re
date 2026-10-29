@@ -1,0 +1,92 @@
+name: realm-bridge-source
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['deploy/realm/bridge/**', 'deploy/realm/core/**', '.github/workflows/realm-bridge.yml']
+permissions:
+  contents: read
+concurrency:
+  group: realm-bridge-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pinned-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    services:
+      scratch-mariadb:
+        image: mariadb@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+        env:
+          MARIADB_ROOT_PASSWORD: BridgeCiOnly2026
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+          --memory=768m --cpus=1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SQL and C++ verifier dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential libmariadb-dev pkg-config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify the complete pinned currency mutation census
+        run: |
+          python3 -m unittest discover -s deploy/realm/bridge/audit/tests -v
+          audit_dir=$(mktemp -d)
+          mkdir "$audit_dir/core"
+          curl --fail --location --retry 2 --connect-timeout 10 --max-time 120 \
+            'https://codeload.github.com/cmangos/mangos-classic/tar.gz/de8f72993b9e1faa1bf92dd5505f3daec5cea3ce' \
+            --output "$audit_dir/core.tar.gz"
+          printf '%s  %s\n' '64c63564d7304aed22b8b48481fb1e9f24062a39786bb4586441d260d9aaed83' "$audit_dir/core.tar.gz" | sha256sum --check -
+          tar --extract --gzip --file "$audit_dir/core.tar.gz" --strip-components=1 --directory "$audit_dir/core"
+          python3 deploy/realm/bridge/audit/check_mutations.py --source "$audit_dir/core" --json
+      - name: Verify durable TEST outbox and C++ fault harness
+        run: |
+          npm ci --prefix deploy/realm
+          npm run build --prefix deploy/realm
+          npm test --prefix deploy/realm
+          node --test deploy/realm/bridge/tests/*.test.mjs
+          node --test deploy/realm/bridge/accounting/tests/*.test.mjs
+          g++ -std=c++17 -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core deploy/realm/bridge/tests/cpp/world-bridge.test.cpp -o /tmp/world-bridge-test
+          /tmp/world-bridge-test
+          python3 -m unittest discover -s deploy/realm/bridge/tests -p 'test_*.py' -v
+          python3 -m unittest discover -s deploy/realm/core -p 'test_*.py' -v
+      - name: Exercise real InnoDB rollback, lost acknowledgements and locking receipt recovery
+        env:
+          BRIDGE_CI_SCRATCH: '1'
+          BRIDGE_CI_DB_PASSWORD: BridgeCiOnly2026
+          BRIDGE_CI_DATABASE: realm_bridge_ci_${{ github.run_id }}_${{ github.run_attempt }}
+          BRIDGE_CI_SCHEMA: deploy/realm/bridge/core/001-world-bridge.sql
+        run: |
+          g++ -std=c++17 -O2 -pthread -I deploy/realm/bridge/tests/cpp -I deploy/realm/bridge/core \
+            deploy/realm/bridge/tests/cpp/mariadb-bridge.test.cpp \
+            $(pkg-config --cflags --libs libmariadb) -o /tmp/mariadb-bridge-test
+          /tmp/mariadb-bridge-test
+      - uses: docker/setup-buildx-action@v4
+      - name: Build actual closed TEST image and compile the pinned auth and world servers once
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/realm/core/Dockerfile.bridge
+          load: true
+          push: false
+          tags: realm-core-bridge:ci
+          cache-from: type=gha,scope=realm-core-bridge-bookworm-v1
+          cache-to: type=gha,scope=realm-core-bridge-bookworm-v1,mode=max,ignore-error=true
+      - name: Verify real image ABI, disabled capabilities, license/source package and runtime
+        run: |
+          bash deploy/realm/bridge/tools/smoke-image.sh realm-core-bridge:ci
+          printf 'Pinned core compiled inside Dockerfile.bridge; actual image passed network-isolated binary/runtime/source smoke. Scratch MariaDB kernel fault drill passed. No deployment or LIVE activation.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Export exact tested binaries, runtime libraries and corresponding source without game assets
+        run: bash deploy/realm/bridge/tools/export-image.sh realm-core-bridge:ci "$RUNNER_TEMP/realm-bridge-bundle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: realm-bridge-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/realm-bridge-bundle/
+          if-no-files-found: error
+          retention-days: 14

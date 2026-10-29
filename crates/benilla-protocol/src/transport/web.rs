@@ -26,6 +26,10 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{BinaryType, MessageEvent, WebSocket};
 
+#[path = "web_reentry.rs"]
+mod reentry;
+pub use reentry::close_for_world_reentry;
+
 use super::ReadExactAsync;
 
 thread_local! {
@@ -171,11 +175,12 @@ impl Conn {
         // A close and an error both end the stream: the reader turns the flag into `UnexpectedEof`,
         // which the app already reads as a lost session.
         let queue = Rc::clone(&inbox);
-        let on_close = Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_: web_sys::CloseEvent| {
-            let mut queue = queue.borrow_mut();
-            queue.closed = true;
-            queue.wake();
-        });
+        let on_close =
+            Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_: web_sys::CloseEvent| {
+                let mut queue = queue.borrow_mut();
+                queue.closed = true;
+                queue.wake();
+            });
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
         let queue = Rc::clone(&inbox);
@@ -186,15 +191,17 @@ impl Conn {
         });
         ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
+        let sock = Rc::new(Socket {
+            ws,
+            inbox,
+            read_timeout: Cell::new(None),
+            _on_message: on_message,
+            _on_close: on_close,
+            _on_error: on_error,
+        });
+        reentry::register(&sock);
         Ok(Conn {
-            sock: SendWrapper::new(Rc::new(Socket {
-                ws,
-                inbox,
-                read_timeout: Cell::new(None),
-                _on_message: on_message,
-                _on_close: on_close,
-                _on_error: on_error,
-            })),
+            sock: SendWrapper::new(sock),
         })
     }
 
@@ -262,6 +269,12 @@ impl Write for ConnWriter {
 /// `write_all` on the upstream socket, so a packet stays a packet across the relay. `send` buffers
 /// and returns, which is why writes never had to become `async`.
 fn send(sock: &Socket, buf: &[u8]) -> io::Result<usize> {
+    if sock.inbox.borrow().closed {
+        return Err(io::Error::new(
+            ErrorKind::NotConnected,
+            "browser session closed",
+        ));
+    }
     sock.ws.send_with_u8_array(buf).map_err(js_err)?;
     Ok(buf.len())
 }
@@ -366,7 +379,10 @@ impl Drop for Timer {
 fn js_err(e: JsValue) -> io::Error {
     let message = e
         .as_string()
-        .or_else(|| e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())))
+        .or_else(|| {
+            e.dyn_ref::<js_sys::Error>()
+                .map(|e| String::from(e.message()))
+        })
         .unwrap_or_else(|| format!("{e:?}"));
     io::Error::other(message)
 }

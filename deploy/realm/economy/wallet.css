@@ -1,0 +1,23 @@
+#realm-wallet-launcher { position:fixed; right:20px; bottom:20px; z-index:10000; border:1px solid #b5a273; border-radius:8px; padding:12px 18px; background:#17241f; color:#fff1c8; font:600 14px system-ui,sans-serif; cursor:pointer; box-shadow:0 4px 20px #0008; }
+#bar #realm-wallet-launcher { position:static; z-index:auto; flex-shrink:0; margin-left:.6rem; padding:5px 9px; border:1px solid #7c8f78; border-radius:5px; font:inherit; text-decoration:none; box-shadow:none; }
+#realm-wallet-dialog { box-sizing:border-box; width:min(560px,calc(100vw - 28px)); max-height:calc(100dvh - 40px); padding:24px; border:1px solid #6a755d; border-radius:14px; background:#14221f; color:#eee9db; font:14px/1.55 system-ui,sans-serif; box-shadow:0 20px 90px #000b; }
+#realm-wallet-dialog::backdrop { background:#030a09c9; }
+#realm-wallet-dialog h2 { margin:5px 0 12px; font-size:26px; line-height:1.2; }
+#realm-wallet-dialog h3 { font-size:15px; margin:0 0 6px; color:#e2d7b4; }
+#realm-wallet-dialog p { margin:9px 0; }
+#realm-wallet-dialog section { margin:18px 0; border-top:1px solid #3b4840; padding-top:16px; }
+#realm-wallet-dialog strong { display:block; color:#f5ce81; font-size:24px; font-variant-numeric:tabular-nums; }
+#realm-wallet-dialog button { border:1px solid #7c8f78; border-radius:7px; padding:9px 12px; background:#263c32; color:#f6efdb; font:600 13px system-ui,sans-serif; cursor:pointer; }
+#realm-wallet-dialog button:disabled { opacity:.5; cursor:wait; }
+#realm-wallet-dialog button:focus-visible,#realm-wallet-launcher:focus-visible,#realm-wallet-dialog summary:focus-visible { outline:3px solid #dfc182; outline-offset:3px; }
+#realm-wallet-dialog .realm-wallet-top { display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:2; background:#14221f; }
+#realm-wallet-dialog .realm-wallet-eyebrow { color:#b9c6ad; letter-spacing:.15em; font-size:11px; font-weight:700; }
+#realm-wallet-dialog .realm-wallet-warning { padding:10px 12px; border:1px solid #8e7745; border-radius:6px; color:#f4d99e; background:#463a212f; font-weight:600; }
+#realm-wallet-dialog .realm-wallet-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+#realm-wallet-dialog .realm-wallet-address { overflow-wrap:anywhere; color:#c0cdbb; font-size:12px; }
+#realm-wallet-dialog .realm-wallet-footnote { color:#aab9a7; font-size:12px; }
+#realm-wallet-dialog [data-field="status"] { min-height:24px; color:#f0d59d; }
+#realm-wallet-dialog [data-field="mint"] { overflow-wrap:anywhere; font-size:12px; color:#aab9a7; }
+#realm-wallet-dialog details { margin:18px 0; }
+#realm-wallet-dialog summary { cursor:pointer; }
+#realm-wallet-dialog ol { padding-left:18px; color:#bcc9b6; font-size:12px; }

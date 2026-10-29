@@ -10,6 +10,14 @@ mod bank;
 mod battlefield;
 mod binder;
 mod broadcast;
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_mode_ack;
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_movement_flags;
+#[cfg(any(target_arch = "wasm32", test))]
+pub use browser_mode_ack::{browser_move_mode_ack, BrowserModeMovement};
+#[cfg(any(target_arch = "wasm32", test))]
+pub use browser_movement_flags::configure_browser_movement_profile;
 mod channel;
 mod chat;
 mod client;
