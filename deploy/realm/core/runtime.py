@@ -369,6 +369,7 @@ def main():
     signal.signal(signal.SIGINT, stop)
     server = ThreadingHTTPServer(('0.0.0.0', int(cfg['PORT'])), Status)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    game_started = False
     try:
         mode = sys.argv[1] if len(sys.argv) > 1 else 'serve'
         if mode == 'extract':
@@ -392,6 +393,7 @@ def main():
         STATE['data'] = True
         STATE['phase'] = 'world-starting'
         prepare_game_permissions(root)
+        game_started = True
         for command in [['/opt/mangos/bin/realmd', '-c', str(root / 'config/realmd.conf')],
                         ['/opt/mangos/bin/mangosd', '-c', str(root / 'config/mangosd.conf'),
                          '-a', str(root / 'config/ahbot.conf'), '-p', str(root / 'config/aiplayerbot.conf')]]:
@@ -404,6 +406,12 @@ def main():
             STATE['ready'] = all(STATE[key] for key in ('database', 'data', 'login', 'world', 'soap'))
             STATE['phase'] = 'listeners-ready' if STATE['ready'] else 'world-starting'
     except Exception as error:
+        if game_started:
+            # Runtime failures must reach ON_FAILURE rather than leave a live
+            # status process permanently holding a stopped realm offline.
+            STATE['phase'] = 'world-failed'
+            STATE['ready'] = False
+            raise
         # Keep the private status/SSH surface alive for repair without repeatedly
         # executing a failing initialization or erasing partially created data.
         STATE['phase'] = 'initialization-failed'
@@ -415,6 +423,7 @@ def main():
         STATE['ready'] = False
         stop_children(CHILDREN)
         server.shutdown()
+        lock.close()
 
 
 if __name__ == '__main__':

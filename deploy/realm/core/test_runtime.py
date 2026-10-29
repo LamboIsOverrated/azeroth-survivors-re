@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import ExitStack
 import json
 import os
 import pathlib
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -20,6 +22,46 @@ spec.loader.exec_module(runtime)
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_game_child_failure_exits_for_restart_but_bootstrap_failure_holds_for_repair(self):
+        for failed_after_launch in (False, True):
+            with self.subTest(failed_after_launch=failed_after_launch), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                cfg = runtime.settings(self.env())
+                child = types.SimpleNamespace(poll=lambda: 17)
+                stop = unittest.mock.Mock()
+                stop.wait.return_value = False
+                stop.is_set.return_value = False
+                server = unittest.mock.Mock()
+                fake_fcntl = types.SimpleNamespace(LOCK_EX=1, LOCK_NB=2, flock=lambda *args: None)
+                contexts = [patch.dict(sys.modules, {'fcntl': fake_fcntl}),
+                            patch.object(runtime, 'Path', return_value=root),
+                            patch.object(runtime, 'settings', return_value=cfg),
+                            patch.object(runtime, 'configure'),
+                            patch.object(runtime, 'bootstrap', side_effect=None if failed_after_launch else RuntimeError('bootstrap failed')),
+                            patch.object(runtime, 'extraction_ready', return_value=True),
+                            patch.object(runtime, 'prepare_game_permissions'),
+                            patch.object(runtime.subprocess, 'Popen', return_value=child),
+                            patch.object(runtime, 'STOP', stop),
+                            patch.object(runtime, 'CHILDREN', []),
+                            patch.object(runtime, 'ThreadingHTTPServer', return_value=server),
+                            patch.object(runtime.threading, 'Thread'),
+                            patch.object(runtime.signal, 'signal'),
+                            patch.object(runtime.sys, 'argv', ['runtime.py', 'serve']),
+                            patch.dict(runtime.os.environ, {'REALM_MAINTENANCE': '0'}, clear=True)]
+                with ExitStack() as stack:
+                    for context in contexts:
+                        stack.enter_context(context)
+                    stop_children = stack.enter_context(patch.object(runtime, 'stop_children'))
+                    if failed_after_launch:
+                        with self.assertRaisesRegex(RuntimeError, 'core child exited'):
+                            runtime.main()
+                        self.assertEqual(stop.wait.call_count, 1, 'must not enter the indefinite repair hold')
+                    else:
+                        runtime.main()
+                        stop.wait.assert_called_once_with()
+                    self.assertGreaterEqual(stop_children.call_count, 1)
+                    server.shutdown.assert_called()
+
     def test_maintenance_runs_only_status_without_database_credentials_in_all_modes(self):
         for mode in ('serve', 'initialize', 'extract'):
             with self.subTest(mode=mode), socket.socket() as reservation:
