@@ -1,6 +1,7 @@
 import {account,identifier,positive,atoms,canonical,hash} from './amounts.mjs';
 import {address,signingAddress,safeInteger,decodeMint,decodeTokenAccount,transferTransaction,signedTransaction,signatureOf,verifyTransferReceipt} from '../../economy/settlement/protocol.mjs';
 import {validTransactionError} from './transaction-errors.mjs';
+import {nativeTransferTransaction,decodeSystemAccount,verifyNativeTransferReceipt} from '../../economy/settlement/native-sol.mjs';
 
 const FORMAT='withdrawal-v1';
 const terminal=new Set(['settled','failed','expired']);
@@ -8,7 +9,7 @@ const stages=['withdrawal-reserve','withdrawal-prepared','withdrawal-signed','wi
 
 // Injected private adapters only. A signer returns bytes; it MUST NOT submit them.
 export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
- const cfg=store.config,db=store.db;
+ const cfg=store.config,db=store.db,native=cfg.assetKind==='native-sol';
  const get=id=>db.prepare('SELECT * FROM ac_operations WHERE id=?').get(id);
  function owned(accountId,id){
   account(accountId);identifier(id);const row=get(id),op=row&&JSON.parse(row.payload);
@@ -29,7 +30,7 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
  async function network(provider=rpc){if(await provider.call('getGenesisHash',[])!==cfg.genesisHash)throw Error('Withdrawal RPC genesis mismatch');}
  function floor(){
   let slot=0;
-  for(const row of db.prepare('SELECT payload FROM ac_deposits').all())slot=Math.max(slot,safeInteger(JSON.parse(row.payload).slot));
+  for(const row of db.prepare('SELECT payload FROM ac_deposits').all()){const proof=JSON.parse(row.payload);slot=Math.max(slot,safeInteger(native?(proof.reserveObservedSlot??proof.slot):proof.slot));}
   for(const row of db.prepare('SELECT kind,payload FROM ac_batches').all())if(stages.includes(row.kind))slot=Math.max(slot,safeInteger(JSON.parse(row.payload).observedSlot));
   return slot;
  }
@@ -39,6 +40,11 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
  }
  async function solvent(minSlot=0){
   await network();const minimum=Math.max(minSlot,floor());
+  if(native){
+   const treasury=await info(cfg.treasuryWallet,minimum),balance=decodeSystemAccount(treasury.value),available=atoms(balance.lamports)-positive(cfg.reserveFloorLamports);
+   if(available<0n)throw Error('Treasury reserve floor shortfall');
+   const proof={observedSlot:treasury.context.slot,treasuryAtoms:available.toString(),reserveFloorLamports:cfg.reserveFloorLamports};checkSolvent(proof);return proof;
+  }
   const mint=await info(cfg.mint,minimum),mintState=decodeMint(mint.value,cfg.decimals);
   const treasury=await info(cfg.treasuryTokenAccount,mint.context.slot),balance=decodeTokenAccount(treasury.value,cfg.mint,cfg.treasuryWallet);
   const proof={observedSlot:treasury.context.slot,treasuryAtoms:balance.atoms,mintSupply:mintState.supply};checkSolvent(proof);return proof;
@@ -46,26 +52,27 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
  function checkSolvent(proof){
   if(safeInteger(proof.observedSlot)<floor())throw Error('Stale reserve observation after concurrent accounting proof');
   const claims=atoms(store.totals().claimsAtoms);
-  if(claims>atoms(proof.treasuryAtoms)||atoms(proof.treasuryAtoms)>atoms(proof.mintSupply))throw Error('Complete reserve reconciliation failed; claims remain held');
+  if(claims>atoms(proof.treasuryAtoms)||(!native&&atoms(proof.treasuryAtoms)>atoms(proof.mintSupply))||(native&&proof.reserveFloorLamports!==cfg.reserveFloorLamports))throw Error('Complete reserve reconciliation failed; claims remain held');
  }
- async function destinationProof(op,minSlot=0){await network();const result=await info(op.request.destinationTokenAccount,Math.max(minSlot,floor()));decodeTokenAccount(result.value,cfg.mint,op.wallet);return result.context.slot;}
+ async function destinationProof(op,minSlot=0){await network();const result=await info(native?op.request.destinationWallet:op.request.destinationTokenAccount,Math.max(minSlot,floor()));if(native)decodeSystemAccount(result.value,{allowMissing:true});else decodeTokenAccount(result.value,cfg.mint,op.wallet);return result.context.slot;}
  function enable(){
   if(db.prepare('SELECT version FROM ac_schema WHERE version=3').get())return;
   if(db.prepare("SELECT COUNT(*) n FROM ac_operations WHERE state!='complete'").get().n||db.prepare('SELECT COUNT(*) n FROM ac_locks').get().n)throw Error('Drain old operations and stop old workers before withdrawal extension');
   db.prepare('INSERT INTO ac_schema VALUES(3,?)').run('conserved-withdrawals-v1');
  }
- function transaction(op,blockhash){return transferTransaction({wallet:cfg.treasuryWallet,source:cfg.treasuryTokenAccount,mint:cfg.mint,destination:op.request.destinationTokenAccount,atoms:op.request.atoms,decimals:cfg.decimals,memo:op.memo,blockhash});}
+ function transaction(op,blockhash,netLamports){return native?nativeTransferTransaction({wallet:cfg.treasuryWallet,destination:op.request.destinationWallet,lamports:netLamports??op.request.atoms,memo:op.memo,blockhash}):transferTransaction({wallet:cfg.treasuryWallet,source:cfg.treasuryTokenAccount,mint:cfg.mint,destination:op.request.destinationTokenAccount,atoms:op.request.atoms,decimals:cfg.decimals,memo:op.memo,blockhash});}
  function planProof(row){
   const plan=row.receipt&&JSON.parse(row.receipt).unsigned;if(!plan)return null;
   address(plan.blockhash);safeInteger(plan.blockhashSlot);safeInteger(plan.blockhashOriginHeight);safeInteger(plan.lastValidBlockHeight);
-  if(plan.blockhashOriginHeight>plan.blockhashSlot||plan.lastValidBlockHeight<plan.blockhashOriginHeight)throw Error('Invalid persisted blockhash origin');return plan;
+  if(plan.blockhashOriginHeight>plan.blockhashSlot||plan.lastValidBlockHeight<plan.blockhashOriginHeight)throw Error('Invalid persisted blockhash origin');
+  if(native&&(positive(plan.feeLamports)+positive(plan.netLamports)!==positive(JSON.parse(row.payload).request.atoms)||plan.withdrawalFeePolicy!==cfg.withdrawalFeePolicy))throw Error('Invalid immutable native gross/fee/net plan');return plan;
  }
  function signedProof(row){
   const op=JSON.parse(row.payload),saved=row.receipt&&JSON.parse(row.receipt).signed;
   if(!saved||typeof saved.signedTransaction!=='string')throw Error('Durable signed withdrawal required');
-  const plan=planProof(row);if(!plan||canonical(plan)!==canonical({blockhash:saved.blockhash,blockhashSlot:saved.blockhashSlot,blockhashOriginHeight:saved.blockhashOriginHeight,lastValidBlockHeight:saved.lastValidBlockHeight}))throw Error('Signed transaction lacks its durable verified origin');
+  const plan=planProof(row);if(!plan||canonical(plan)!==canonical({blockhash:saved.blockhash,blockhashSlot:saved.blockhashSlot,blockhashOriginHeight:saved.blockhashOriginHeight,lastValidBlockHeight:saved.lastValidBlockHeight,...(native?{feeLamports:saved.feeLamports,netLamports:saved.netLamports,withdrawalFeePolicy:saved.withdrawalFeePolicy}:{})}))throw Error('Signed transaction lacks its durable verified origin');
   const raw=Buffer.from(saved.signedTransaction,'base64'),tx=signedTransaction(raw);
-  if(raw.toString('base64')!==saved.signedTransaction||signatureOf(tx)!==saved.signature||tx.signatures[0].publicKey.toBase58()!==cfg.treasuryWallet||!tx.serializeMessage().equals(transaction(op,saved.blockhash).serializeMessage()))throw Error('Stored signed transaction differs from immutable withdrawal');
+  if(raw.toString('base64')!==saved.signedTransaction||signatureOf(tx)!==saved.signature||tx.signatures[0].publicKey.toBase58()!==cfg.treasuryWallet||!tx.serializeMessage().equals(transaction(op,saved.blockhash,saved.netLamports).serializeMessage()))throw Error('Stored signed transaction differs from immutable withdrawal');
   return saved;
  }
  function duplicate(row,request,wallet){const op=JSON.parse(row.payload);if(row.account_id!==request.accountId||op.format!==FORMAT||canonical(op.request)!==canonical(request)||op.wallet!==wallet)throw Error('Withdrawal idempotency conflict');return view(row);}
@@ -99,6 +106,11 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
   const receipt=await rpc.call('getTransaction',[saved.signature,{encoding:'base64',commitment:'finalized',maxSupportedTransactionVersion:0}]);
   if(!receipt||receipt.version!=='legacy'||!Array.isArray(receipt.transaction)||receipt.transaction.length!==2||receipt.transaction[0]!==saved.signedTransaction||receipt.transaction[1]!=='base64'||safeInteger(receipt.slot)!==observed.value.slot||!receipt.meta||!validTransactionError(receipt.meta.err,errorContext(saved))||canonical(receipt.meta.err)!==canonical(observed.value.err))throw Error('Exact finalized raw withdrawal proof required');
   if(receipt.blockTime!==null)safeInteger(receipt.blockTime);
+  if(native){
+   const checked=verifyNativeTransferReceipt({receipt,signature:saved.signature,intent:{wallet:cfg.treasuryWallet,destination:op.request.destinationWallet,lamports:saved.netLamports,memo:op.memo,createdSlot:saved.blockhashSlot},expectedFeeLamports:saved.feeLamports,allowFailure:true});
+   const chainReceipt=structuredClone({slot:receipt.slot,blockTime:receipt.blockTime,version:'legacy',transaction:receipt.transaction,meta:{err:receipt.meta.err,fee:receipt.meta.fee,preBalances:receipt.meta.preBalances,postBalances:receipt.meta.postBalances,preTokenBalances:receipt.meta.preTokenBalances,postTokenBalances:receipt.meta.postTokenBalances,innerInstructions:receipt.meta.innerInstructions}});
+   return {state:checked.failed?'failed':'settled',feeLamports:checked.feeLamports,netLamports:saved.netLamports,slot:checked.slot,observedSlot:observed.slot,sourceId:rpc.sourceId,receiptHash:hash(chainReceipt),chainReceipt};
+  }
   if(receipt.meta.err===null)verifyTransferReceipt({receipt,signature:saved.signature,intent:{wallet:cfg.treasuryWallet,sourceTokenAccount:cfg.treasuryTokenAccount,atoms:op.request.atoms,memo:op.memo,createdSlot:saved.blockhashSlot},config:{...cfg,treasuryWallet:op.wallet,treasuryTokenAccount:op.request.destinationTokenAccount}});
   else unchangedTokenBalances(receipt,op,saved);
   const chainReceipt=structuredClone({slot:receipt.slot,blockTime:receipt.blockTime,version:'legacy',transaction:receipt.transaction,meta:{err:receipt.meta.err,preTokenBalances:receipt.meta.preTokenBalances,postTokenBalances:receipt.meta.postTokenBalances,...(receipt.meta.err===null?{innerInstructions:receipt.meta.innerInstructions}:{})}});
@@ -124,10 +136,11 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
    const rows=db.prepare("SELECT * FROM ac_operations WHERE json_extract(payload,'$.format')=? AND state!='complete' AND id>? ORDER BY id LIMIT ?").all(FORMAT,afterId??'',limit+1);
    return {entries:rows.slice(0,limit).map(view),nextCursor:rows.length>limit?rows[limit-1].id:null};
   },
-  async reserveWithdrawal({accountId,id,atoms:amount,destinationTokenAccount}){
-   const request={accountId:account(accountId),id:identifier(id),atoms:positive(amount).toString(),destinationTokenAccount:address(destinationTokenAccount)};
+  async reserveWithdrawal({accountId,id,atoms:amount,destinationTokenAccount,destinationWallet}){
+   if(native?destinationTokenAccount!==undefined:destinationWallet!==undefined)throw Error('Withdrawal destination asset mismatch');
+   const request={accountId:account(accountId),id:identifier(id),atoms:positive(amount).toString(),...(native?{destinationWallet:signingAddress(destinationWallet)}:{destinationTokenAccount:address(destinationTokenAccount)})};
    adapters({needSigner:true,needWallet:true});signingAddress(cfg.treasuryWallet);const wallet=signingAddress(await resolveWallet(accountId));
-   if(wallet===cfg.treasuryWallet||destinationTokenAccount===cfg.treasuryTokenAccount)throw Error('Withdrawal cannot target treasury');
+   if(wallet===cfg.treasuryWallet||(native?destinationWallet!==wallet:destinationTokenAccount===cfg.treasuryTokenAccount))throw Error('Withdrawal must target bound wallet outside treasury');
    const prior=get(id);if(prior)return duplicate(prior,request,wallet);
    await network(archiveRpc);const op={format:FORMAT,phase:'LIVE',namespaceId:cfg.namespaceId,configHash:cfg.hash,id,request,wallet,createdAt:safeInteger(clock()),memo:`realm-live:withdrawal:${cfg.hash}:${accountId}:${id}`};
    const destinationSlot=await destinationProof(op),observation=await solvent(destinationSlot);
@@ -148,6 +161,12 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
     const origin=await rpc.call('getBlock',[latest.context.slot,{commitment:'finalized',transactionDetails:'none',rewards:false,maxSupportedTransactionVersion:0}]);
     if(!origin||origin.blockhash!==latest.value.blockhash||safeInteger(origin.blockHeight)>latest.context.slot||origin.blockHeight>latest.value.lastValidBlockHeight)throw Error('Exact finalized blockhash origin required');
     const proposed={blockhash:latest.value.blockhash,blockhashSlot:latest.context.slot,blockhashOriginHeight:origin.blockHeight,lastValidBlockHeight:latest.value.lastValidBlockHeight};
+    if(native){
+     const quote=async tx=>{const value=await rpc.call('getFeeForMessage',[tx.serializeMessage().toString('base64'),{commitment:'finalized',minContextSlot:latest.context.slot}]);if(safeInteger(value?.context?.slot)<latest.context.slot||safeInteger(value.value)===0)throw Error('Exact fresh native fee quote required');return BigInt(value.value);};
+     const fee=await quote(transaction(op,proposed.blockhash)),net=positive(op.request.atoms)-fee;if(net<=0n)throw Error('Withdrawal gross debit must exceed network fee');
+     if(await quote(transaction(op,proposed.blockhash,net.toString()))!==fee)throw Error('Native fee quote changed for exact payout message');
+     Object.assign(proposed,{feeLamports:fee.toString(),netLamports:net.toString(),withdrawalFeePolicy:cfg.withdrawalFeePolicy});
+    }
     plan=store.atomic(()=>{
      const current=owned(accountId,id),prior=planProof(current);if(prior)return prior;checkSolvent(observation);
      store.post({key:'withdrawal-prepared:'+id,kind:'withdrawal-prepared',payload:{operationId:id,unsigned:proposed,observedSlot:latest.context.slot},postings:[]});
@@ -155,7 +174,7 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
     });
    }
    const destinationSlot=await destinationProof(op,plan.blockhashSlot),observation=await solvent(destinationSlot),beforeSign=owned(accountId,id);if(beforeSign.state!=='reserved')return view(beforeSign);checkSolvent(observation);
-   const tx=transaction(op,plan.blockhash),message=tx.serializeMessage(),raw=await signer.signTransaction(Uint8Array.from(tx.serialize({requireAllSignatures:false,verifySignatures:false}))),signed=signedTransaction(raw);
+   const tx=transaction(op,plan.blockhash,plan.netLamports),message=tx.serializeMessage(),raw=await signer.signTransaction(Uint8Array.from(tx.serialize({requireAllSignatures:false,verifySignatures:false}))),signed=signedTransaction(raw);
    if(!signed.serializeMessage().equals(message)||signed.signatures[0].publicKey.toBase58()!==cfg.treasuryWallet)throw Error('Signer changed exact withdrawal');
    const saved={signedTransaction:signed.serialize().toString('base64'),signature:signatureOf(signed),...plan};
    return store.atomic(()=>{
@@ -188,8 +207,9 @@ export function withdrawals({store,rpc,archiveRpc,signer,resolveWallet,clock}){
    const proof={format:'withdrawal-result-v1',phase:'LIVE',namespaceId:cfg.namespaceId,configHash:cfg.hash,operationId:id,accountId,signature:saved.signature,...result};
    return store.atomic(()=>{
     const current=owned(accountId,id);if(current.state==='complete')return view(current);signedProof(current);
-    const amount=positive(op.request.atoms),settled=result.state==='settled';
-    store.post({key:'withdrawal-result:'+id,kind:'withdrawal-'+result.state,payload:proof,postings:[{bucket:'withdrawal_reserved',owner:'operation:'+id,delta:-amount},settled?{bucket:'external_reserve',owner:'system',delta:amount}:{bucket:'vault_available',owner:'account:'+accountId,delta:amount}]});
+    const amount=positive(op.request.atoms),settled=result.state==='settled',failedNative=native&&result.state==='failed';
+    const postings=failedNative?[{bucket:'withdrawal_reserved',owner:'operation:'+id,delta:-amount},{bucket:'vault_available',owner:'account:'+accountId,delta:amount-positive(result.feeLamports)},{bucket:'external_reserve',owner:'system',delta:positive(result.feeLamports)}]:[{bucket:'withdrawal_reserved',owner:'operation:'+id,delta:-amount},settled?{bucket:'external_reserve',owner:'system',delta:amount}:{bucket:'vault_available',owner:'account:'+accountId,delta:amount}];
+    store.post({key:'withdrawal-result:'+id,kind:'withdrawal-'+result.state,payload:proof,postings});
     db.prepare('INSERT INTO ac_receipts VALUES(?,?,?)').run('withdrawal:'+hash(saved.signature),id,canonical(proof));
     db.prepare("UPDATE ac_operations SET state='complete',receipt=? WHERE id=?").run(canonical({unsigned:planProof(current),signed:saved,result:proof}),id);db.prepare('DELETE FROM ac_locks WHERE operation_id=?').run(id);return view(owned(accountId,id));
    });

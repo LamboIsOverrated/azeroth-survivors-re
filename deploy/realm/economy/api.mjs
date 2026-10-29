@@ -1,5 +1,6 @@
 import { Ledger, accountId, parseUnits, MAX_TEST_ALLOCATION } from './ledger.mjs';
-import { canonicalAddress, issueChallenge, verifyChallenge, chainBalances } from './wallet.mjs';
+import { issueChallenge, verifyChallenge, chainBalances } from './wallet.mjs';
+import { SOL_CURRENCY, genesisFor } from './solana-network.mjs';
 
 function configuration(env) {
   let url;
@@ -7,19 +8,19 @@ function configuration(env) {
   if (url.origin !== env.PUBLIC_ORIGIN || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname)))) throw new Error('PUBLIC_ORIGIN must be an exact HTTPS origin');
   const allocation = env.ECONOMY_TEST_ALLOCATION_UNITS ?? '0';
   if (parseUnits(allocation) > MAX_TEST_ALLOCATION) throw new Error('Test allocation exceeds safe bound');
-  let mint = null;
-  if (env.ECONOMY_TOKEN_MINT) mint = canonicalAddress(env.ECONOMY_TOKEN_MINT);
+  const cluster = env.ECONOMY_SOLANA_CLUSTER ?? 'devnet';
+  genesisFor(cluster);
   let rpc = null;
   if (env.ECONOMY_SOLANA_RPC_URL) {
     const endpoint = new URL(env.ECONOMY_SOLANA_RPC_URL);
     if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.hash) throw new Error('Solana RPC must use HTTPS');
     rpc = endpoint.href;
   }
-  return {origin: url.origin, allocation, mint, rpc};
+  return {origin: url.origin, allocation, cluster, rpc};
 }
 
 function publicConfig(config) {
-  return {phase: 'TEST', nonredeemable: true, noCarryover: true, settlementEnabled: false, mint: config.mint, mintValidated: false, chainDisplayConfigured: Boolean(config.rpc), testAllocationAvailable: config.allocation !== '0', maxTestAllocationUnits: MAX_TEST_ALLOCATION.toString(), gameUnitConversion: null};
+  return {phase: 'TEST', nonredeemable: true, noCarryover: true, settlementEnabled: false, currency: SOL_CURRENCY, cluster: config.cluster, mint: null, mintValidated: false, chainDisplayConfigured: Boolean(config.rpc), testAllocationAvailable: config.allocation !== '0', maxTestAllocationUnits: MAX_TEST_ALLOCATION.toString(), gameUnitConversion: null};
 }
 
 function send(res, status, data) {
@@ -90,10 +91,10 @@ export function createEconomy({identity, getCharacters, dbPath = '/state/economy
       if (req.method === 'GET' && path === '/state') return send(res, 200, {config: publicConfig(config), vault: vault(user.id), wallet: {address: ledger.wallet(user.id)}, characterMoney: await characterSnapshot(req,getCharacters)});
       if (req.method === 'GET' && path === '/history') return send(res, 200, {entries: ledger.history(user.id), limit: 50});
       if (req.method === 'GET' && path === '/wallet/balances') {
-        try { return send(res, 200, await chainBalances({wallet: ledger.wallet(user.id), mint: config.mint, rpc: config.rpc, fetchImpl})); }
+        try { return send(res, 200, await chainBalances({wallet: ledger.wallet(user.id), cluster: config.cluster, rpc: config.rpc, fetchImpl})); }
         catch { return send(res, 503, {available: false, error: 'Chain balances are temporarily unavailable. No account funds were changed.'}); }
       }
-      if (req.method === 'POST' && ['/deposit', '/withdraw', '/swap'].includes(path)) return send(res, 503, {error: 'Real settlement is disabled. Token validation, conversion, funded reserve, signer, reconciliation and bridge implementation are required.', settlementEnabled: false});
+      if (req.method === 'POST' && ['/deposit', '/withdraw', '/swap'].includes(path)) return send(res, 503, {error: path === '/swap' ? 'The realm uses native SOL. No custom-token exchange is required.' : 'SOL settlement is not active. Treasury backing, signer operations, reconciliation and funded gameplay integration are required.', settlementEnabled: false, currency: 'SOL'});
       if (req.method === 'POST' && path === '/test-allocation') {
         const body = await jsonBody(req); onlyKeys(body, user.isAdmin === true ? ['units'] : []);
         const units = user.isAdmin === true && body.units !== undefined ? body.units : config.allocation;

@@ -1,8 +1,10 @@
 import {createHash} from 'node:crypto';
-import {address,rawAtoms,TOKEN_PROGRAM} from '../../economy/settlement/protocol.mjs';
+import {address,signingAddress,rawAtoms,TOKEN_PROGRAM} from '../../economy/settlement/protocol.mjs';
 
 export const U64=18446744073709551615n;
 export const GAME_MAX=2147483646n;
+// Full getGenesisHash result, not the shortened CAIP-2 network reference.
+export const DEVNET_GENESIS='EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 export const atoms=value=>rawAtoms(value,{zero:true});
 export function units(value){
  if(typeof value!=='string'||!/^(0|[1-9][0-9]{0,9})$/.test(value)||BigInt(value)>GAME_MAX)throw Error('Canonical bounded game units required');
@@ -25,6 +27,12 @@ export function identifier(value,label='identifier'){
 export function account(value){if(!Number.isSafeInteger(value)||value<1||value>4294967295)throw Error('Invalid account');return value;}
 export function configuration(input){
  if(!input||input.phase!=='LIVE')throw Error('Dedicated LIVE configuration required');
+ if(input.assetKind==='native-sol'){
+  if(input.cluster!=='devnet'||input.genesisHash!==DEVNET_GENESIS||input.decimals!==9||typeof input.namespaceId!=='string'||!/^devnet-sol[-:.]/.test(input.namespaceId)||['mint','tokenProgram','treasuryTokenAccount'].some(key=>input[key]!==undefined)||(input.withdrawalFeePolicy!==undefined&&input.withdrawalFeePolicy!=='gross-includes-network-fee'))throw Error('Explicit isolated devnet native SOL configuration required');
+  const cfg={phase:'LIVE',assetKind:'native-sol',cluster:'devnet',namespaceId:identifier(input.namespaceId,'namespace'),genesisHash:DEVNET_GENESIS,decimals:9,treasuryWallet:signingAddress(input.treasuryWallet),atomsPerGameUnit:positive(input.atomsPerGameUnit).toString(),reserveFloorLamports:positive(input.reserveFloorLamports).toString(),withdrawalFeePolicy:'gross-includes-network-fee'};
+  return Object.freeze({...cfg,hash:hash(cfg)});
+ }
+ if(input.assetKind!==undefined)throw Error('Unsupported accounting asset kind');
  if(!Number.isInteger(input.decimals)||input.decimals<0||input.decimals>18)throw Error('Invalid mint decimals');
  if(input.tokenProgram!==undefined&&input.tokenProgram!==TOKEN_PROGRAM)throw Error('Conventional SPL only');
  const cfg={phase:'LIVE',namespaceId:identifier(input.namespaceId,'namespace'),genesisHash:address(input.genesisHash),mint:address(input.mint),tokenProgram:TOKEN_PROGRAM,decimals:input.decimals,treasuryWallet:address(input.treasuryWallet),treasuryTokenAccount:address(input.treasuryTokenAccount),atomsPerGameUnit:positive(input.atomsPerGameUnit).toString()};

@@ -26,7 +26,7 @@ const targetFor=(raw,base)=>{
   if(typeof raw!=='string'||!raw.startsWith('/')||raw.startsWith('//')||raw.includes('\\'))throw new Error('Invalid request path.');
   const path=new URL(raw,'http://local');const target=new URL(base);target.pathname=path.pathname;target.search=path.search;return target;
 };
-export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,economyFactory,marketFactory,dbPath,env={},fetchImpl=fetch,status=()=>({state:'starting',message:'The realm is starting.'}),walletAsset,walletStyle,marketAsset,marketStyle,gatePlayUntilReady=false}={}) {
+export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,economyFactory,dbPath,env={},fetchImpl=fetch,status=()=>({state:'starting',message:'The realm is starting.'}),walletAsset,walletStyle,gatePlayUntilReady=false}={}) {
   const configuredOrigin=new URL(publicOrigin).origin;
   if(publicOrigin!==configuredOrigin)throw new Error('A single public origin without a path is required.');
   const publicResponses=new WeakMap(),requestCookies=new WeakMap();
@@ -52,7 +52,6 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
   };
   const getCharacters=async req=>{const response=await realmRequest(req,'/api/character-balances');if(!response.ok){await response.body?.cancel();throw new Error('Character balances unavailable.');}return response.json();};
   const economy=economyFactory?.({identity,getCharacters,dbPath,env,fetchImpl});
-  const market=marketFactory?.({identity,resolveWallet:id=>economy?.walletFor?.(id)??null,env,fetchImpl});
   const gateway=createServer(async(req,res)=>{
     publicResponses.set(req,res);
     res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','same-origin');res.setHeader('x-frame-options','DENY');
@@ -71,13 +70,15 @@ export function createWebGateway({realmUrl='http://127.0.0.1:8090',publicOrigin,
     if(req.method==='GET'&&((target.pathname==='/realm-wallet.bundle.js'&&walletAsset)||(target.pathname==='/realm-wallet.bundle.css'&&walletStyle))) {
       const css=target.pathname.endsWith('.css');res.writeHead(200,{'content-type':css?'text/css':'text/javascript','cache-control':'private, no-cache'});return res.end(css?walletStyle:walletAsset);
     }
-    if(req.method==='GET'&&((target.pathname==='/realm-market.bundle.js'&&marketAsset)||(target.pathname==='/realm-market.bundle.css'&&marketStyle))) {
-      const css=target.pathname.endsWith('.css');res.writeHead(200,{'content-type':css?'text/css':'text/javascript','cache-control':'private, no-cache'});return res.end(css?marketStyle:marketAsset);
-    }
+    if(['/realm-market.bundle.js','/realm-market.bundle.css'].includes(target.pathname))return json(res,410,{error:'The realm uses native SOL; the custom-token market has been retired.'});
     if(target.pathname==='/api/market'||target.pathname.startsWith('/api/market/')) {
       res.setHeader('cache-control','private, no-store');
-      try{if(market&&await market(req,res))return;}catch{if(!res.headersSent)return json(res,503,{error:'The coin exchange is temporarily unavailable.'});return res.destroy();}
-      return json(res,503,{error:'The coin exchange is unavailable.'});
+      try {
+        const user=await identity(req);
+        if(!user)return json(res,401,{error:'Sign into your realm account first.'});
+        if(req.headers['sec-fetch-site']==='cross-site'||(req.headers.origin!==undefined&&req.headers.origin!==configuredOrigin))return json(res,403,{error:'Origin rejected.'});
+        return json(res,req.method==='GET'&&target.pathname==='/api/market/config'?200:503,{enabled:false,currency:'SOL',tokenMint:null,settlementEnabled:false,reason:'The realm uses native SOL. No custom-token exchange is required.'});
+      } catch {return json(res,503,{enabled:false,settlementEnabled:false,error:'Realm identity is temporarily unavailable.'});}
     }
     if(target.pathname==='/api/economy'||target.pathname.startsWith('/api/economy/')) {
       res.setHeader('cache-control','private, no-store');

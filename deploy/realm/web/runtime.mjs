@@ -4,7 +4,6 @@ import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createWebGateway} from './proxy.mjs';
 import {createEconomy} from '../economy/api.mjs';
-import {createMarket} from '../market/index.mjs';
 import {realmState,clientDataComplete} from './state.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
@@ -18,9 +17,7 @@ let state=maintenance?{state:'maintenance',message:'The realm is temporarily clo
 let child,stopped=false,polling=false;
 const walletAsset=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.js'));
 const walletStyle=await readFile(resolve(here,'../economy/public/realm-wallet.bundle.css'));
-const marketAsset=await readFile(resolve(here,'../market/public/realm-market.bundle.js'));
-const marketStyle=await readFile(resolve(here,'../market/public/realm-market.bundle.css'));
-const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,marketAsset,marketStyle,gatePlayUntilReady:true,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:maintenance?undefined:createEconomy,marketFactory:maintenance?undefined:createMarket});
+const server=createWebGateway({realmUrl,publicOrigin,status:()=>state,walletAsset,walletStyle,gatePlayUntilReady:true,dbPath:resolve(stateRoot,'economy.sqlite'),env:{...process.env,PUBLIC_ORIGIN:publicOrigin},economyFactory:maintenance?undefined:createEconomy});
 server.listen(Number(process.env.PORT||8080),'0.0.0.0',()=>console.log(`Public realm gateway listening on ${server.address().port}.`));
 
 function preparationFailed() {

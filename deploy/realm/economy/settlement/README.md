@@ -1,4 +1,6 @@
-# Closed token settlement engine
+# Legacy closed SPL settlement engine
+
+The browser MMO's current target is native SOL. This older SPL engine remains as regression-tested prototype code and is not the SOL integration. The focused `native-sol.mjs` proof module is used by the conserved `bridge/accounting/` kernel's isolated devnet native-SOL policy. The realm gateway imports neither settlement implementation; public custody remains closed. No mint or custom-token CA is required for native SOL.
 
 This is an **internal, independently testable engine**, not a live token bridge. No web route imports it. Existing `/api/economy/deposit`, `/withdraw` and `/swap` remain disabled. There is no environment switch that activates this engine. Supplying a CA cannot enable game redemption. It has no keys, funding, network adapter or background broadcaster, and tests send no network transactions.
 

@@ -14,5 +14,5 @@ Secrets use `preserve()` and are never placed in Git. The public runtime URL and
 
 `/healthz` proves the wrapper is running; `/readyz` requires the account database, game files, SQL, SOAP and world listeners. During `REALM_MAINTENANCE=1`, wrappers remain available for recovery but gameplay and account writers stop. Maintenance state is an operator-controlled environment setting and is intentionally not reset by this file. See [the recovery runbook](../docs/REALM-OPERATIONS.md) before capture or restore.
 
-The token mint is absent and real transfer flags are off. A validated CA, reconciled treasury, signer operations, backed game issuance and reviewed world escrow are separate activation requirements. Do not use a token address or an infrastructure apply to bypass those gates.
+The realm targets native SOL; no custom-token CA or token exchange is required. Pair the preserved `ECONOMY_SOLANA_CLUSTER` with `ECONOMY_SOLANA_RPC_URL` for read-only wallet balances. The default cluster is devnet; every read checks its full genesis hash. Existing character money remains TEST, and real transfers stay closed pending a reconciled treasury, signer operations, funded game issuance and reviewed world escrow. An infrastructure apply cannot activate settlement.
 

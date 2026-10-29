@@ -30,7 +30,7 @@ export default defineRailway((ctx) => {
     deploy: { drainingSeconds: 30, healthcheckTimeout: 120, restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10, sleepApplication: false, limitOverride: { containers: { cpu: 2, memoryBytes: 4000000000 } } },
     replicas: { "iad": 1 },
     volumeMounts: { "/state": realmWebVolume },
-    env: { DOWNLOAD_GAME_DATA: preserve(), ECONOMY_SOLANA_RPC_URL: preserve(), ECONOMY_TEST_ALLOCATION_UNITS: preserve(), MANGOSD_HOST: preserve(), MARIADB_URL: preserve(), MMO_BUNDLE_URL: preserve(), MMO_BUNDLE_SHA256: preserve(), PORT: preserve(), RAILWAY_DOCKERFILE_PATH: "Dockerfile", REALMD_HOST: preserve(), REALM_PUBLIC_URL: preserve(), REALM_REMOTE_CONFIG: preserve(), REALM_TRANSPORT_PROFILE: preserve(), SOAP_BOOTSTRAP_PASS: preserve(), SOAP_BOOTSTRAP_USER: preserve(), SOAP_URL: preserve(), TRUST_RAILWAY_EDGE: preserve() },
+    env: { DOWNLOAD_GAME_DATA: preserve(), ECONOMY_SOLANA_CLUSTER: preserve(), ECONOMY_SOLANA_RPC_URL: preserve(), ECONOMY_TEST_ALLOCATION_UNITS: preserve(), MANGOSD_HOST: preserve(), MARIADB_URL: preserve(), MMO_BUNDLE_URL: preserve(), MMO_BUNDLE_SHA256: preserve(), PORT: preserve(), RAILWAY_DOCKERFILE_PATH: "Dockerfile", REALMD_HOST: preserve(), REALM_PUBLIC_URL: preserve(), REALM_REMOTE_CONFIG: preserve(), REALM_TRANSPORT_PROFILE: preserve(), SOAP_BOOTSTRAP_PASS: preserve(), SOAP_BOOTSTRAP_USER: preserve(), SOAP_URL: preserve(), TRUST_RAILWAY_EDGE: preserve() },
   });
 
   return project("azeroth-survivors", {

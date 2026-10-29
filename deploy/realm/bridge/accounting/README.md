@@ -1,5 +1,7 @@
 # Closed LIVE accounting kernel
 
+The browser MMO now targets native SOL. This kernel also accepts a deliberately isolated devnet native-SOL policy; see [native SOL](NATIVE-SOL.md) for its exact configuration, fee rules and current limits. The existing `LIVE` field denotes this kernel's backed accounting proof domain, **not** a mainnet launch. The native branch rejects mainnet and never imports TEST balances. No public HTTP route constructs this kernel.
+
 Private implementation and fixture tests only. Nothing imports this module in the gateway or world server. The withdrawal extension can call explicitly injected sign-only/RPC adapters; no production adapters, keys, public routes or activation flags are configured here. Tests use published fixture signatures and simulated sends, with no actual network transaction. Existing TEST balances and the earlier withdrawal prototype are separate and are **never** copied here. The current TEST bridge is not a valid LIVE adapter.
 
 ## Interface

@@ -40,6 +40,20 @@ function formatAtoms(value, decimals) {
   return whole + (fraction ? `.${fraction}` : '');
 }
 
+function solNetwork(cluster) {
+  if (cluster === 'devnet') return 'Solana devnet · test SOL, no cash value';
+  if (cluster === 'mainnet-beta') return 'Solana mainnet-beta';
+  throw new Error('The wallet network is unavailable.');
+}
+
+export function solBalanceText(chain, cluster) {
+  const network = solNetwork(cluster);
+  if (!chain || chain.cluster !== cluster) throw new Error('The wallet balance network does not match this realm.');
+  if (chain.available === false) return `${network}: ${typeof chain.reason === 'string' ? chain.reason : 'Wallet balance unavailable.'}`;
+  if (chain.available !== true || chain.genesisVerified !== true || chain.commitment !== 'finalized' || chain.displayOnly !== true || typeof chain.solLamports !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(chain.solLamports) || BigInt(chain.solLamports) > 18446744073709551615n) throw new Error('A verified native SOL wallet balance is unavailable.');
+  return `${formatAtoms(chain.solLamports,9)} SOL · ${network} · finalized wallet balance, display only`;
+}
+
 if (['/', '/play'].includes(location.pathname) && !document.querySelector('#realm-wallet-launcher')) {
   const styles = document.createElement('link'); styles.rel='stylesheet'; styles.href='/realm-wallet.bundle.css'; document.head.append(styles);
   const launcher = document.createElement('button'); launcher.id='realm-wallet-launcher'; launcher.textContent='Wallet · TEST';
@@ -52,26 +66,25 @@ if (['/', '/play'].includes(location.pathname) && !document.querySelector('#real
     <div class="realm-wallet-actions"><button data-action="phantom">Link Phantom</button><button data-action="solflare">Link Solflare</button></div>
     <p data-field="address" class="realm-wallet-address">No linked wallet.</p>
     <section><h3>In-game TEST currency (last saved)</h3><p data-field="character">Loading authoritative character balances…</p><ul data-field="characters"></ul></section>
-    <section><h3>Your Solana wallet</h3><p data-field="chain">Link a wallet to view chain balances.</p><p data-field="mint">Launch coin not configured.</p></section>
+    <section><h3>Your wallet · Native SOL</h3><p>Game currency target: SOL. No custom token is needed. TEST game money and vault units cannot be exchanged for SOL.</p><p data-field="network">Checking the Solana network…</p><p data-field="chain">Link a wallet to view its native SOL balance.</p></section>
     <p class="realm-wallet-warning">Deposits and withdrawals are unavailable during this test.</p>
-    <div data-realm-market></div>
     <details data-field="testTools" hidden><summary>Test tools</summary><section><h3>Account TEST vault</h3><strong data-field="vault">—</strong><p>These test units are separate from character money and cannot be redeemed.</p><button data-action="allocate" hidden>Claim one-time TEST allocation</button></section><ol data-field="history"></ol></details>
     <p data-field="status" role="status" aria-live="polite"></p>
     <button data-action="refresh">Refresh balances</button>
     <p class="realm-wallet-footnote">Wallet signatures link your wallet only. Never share a recovery phrase or private key.</p>`;
   (document.querySelector('#bar')||document.body).append(launcher);
   document.body.append(dialog);
-  import('/realm-market.bundle.js').catch(()=>{});
   const field = name => dialog.querySelector(`[data-field="${name}"]`);
   let busy = false;
   const status = text => { field('status').textContent=text; };
-  function controls(value) { busy=value; for(const button of dialog.querySelectorAll('button[data-action]:not([data-action="close"])')) if(!button.closest('[data-realm-market]'))button.disabled=value; }
+  function controls(value) { busy=value; for(const button of dialog.querySelectorAll('button[data-action]:not([data-action="close"])')) button.disabled=value; }
   async function refresh() {
     const state = await api('/state');
     field('vault').textContent=`${state.vault.units} TEST vault units`;
     field('testTools').hidden=!state.config.testAllocationAvailable&&state.vault.units==='0';
     field('address').textContent=state.wallet.address ? `Linked wallet: ${state.wallet.address}` : 'No linked wallet.';
-    dialog.querySelector('[data-realm-market]').dispatchEvent(new Event('realm-market:refresh'));
+    field('network').textContent=`${solNetwork(state.config.cluster)} · wallet display only`;
+    field('chain').textContent='Checking native SOL wallet balance…';
     field('characters').replaceChildren();
     field('character').textContent=state.characterMoney.available ? 'Realm server snapshot. Online character changes may not appear until saved. TEST money is nonredeemable.' : state.characterMoney.reason;
     if (state.characterMoney.available) {
@@ -79,12 +92,11 @@ if (['/', '/play'].includes(location.pathname) && !document.querySelector('#real
       if (!state.characterMoney.characters.length) field('character').textContent='No characters on this realm account yet.';
     }
     dialog.querySelector('[data-action="allocate"]').hidden=!state.config.testAllocationAvailable;
-    field('mint').textContent=state.config.mint ? `Launch coin address: ${state.config.mint}` : 'Your launch coin is not connected yet.';
     const history=await api('/history'); field('history').replaceChildren();
     for(const entry of history.entries) { const item=document.createElement('li'); item.textContent=`${entry.units} TEST · ${entry.kind} · ${new Date(entry.createdAt).toLocaleString()}`; field('history').append(item); }
     if (!history.entries.length) { const item=document.createElement('li'); item.textContent='No account vault activity.'; field('history').append(item); }
     const chain=await api('/wallet/balances');
-    field('chain').textContent=chain.available ? `${formatAtoms(chain.solLamports,9)} SOL${chain.token ? ` · ${formatAtoms(chain.token.atoms,chain.token.decimals)} configured-token units` : ''} · finalized balances, display only` : chain.reason;
+    field('chain').textContent=solBalanceText(chain,state.config.cluster);
   }
   async function run(action) {
     if (busy) return;

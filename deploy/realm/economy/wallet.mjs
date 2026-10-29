@@ -1,5 +1,6 @@
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
+import { genesisFor } from './solana-network.mjs';
 
 export function canonicalAddress(value) {
   if (typeof value !== 'string' || value.length < 32 || value.length > 44) throw new Error('Invalid wallet');
@@ -41,29 +42,20 @@ export function verifyChallenge(ledger, id, challengeId, signature, origin, now)
   });
 }
 
-export async function chainBalances({wallet, mint, rpc, fetchImpl}) {
-  if (!wallet || !rpc) return {available: false, reason: !wallet ? 'Link a wallet to view chain balances.' : 'Chain balance display is not configured.'};
+export async function chainBalances({wallet, cluster = 'devnet', rpc, fetchImpl}) {
+  const genesis = genesisFor(cluster);
+  if (!wallet || !rpc) return {available: false, cluster, reason: !wallet ? 'Link a wallet to view its SOL balance.' : 'SOL balance display is not configured.'};
+  canonicalWallet(wallet);
   async function call(method, params) {
-    const response = await fetchImpl(rpc, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params}), signal: AbortSignal.timeout(8000)});
+    const response = await fetchImpl(rpc, {method: 'POST', redirect: 'error', headers: {'content-type': 'application/json'}, body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params}), signal: AbortSignal.timeout(8000)});
     if (!response.ok) throw new Error('Chain balance unavailable');
     const json = await response.json();
-    if (json.error || !json.result) throw new Error('Chain balance unavailable');
+    if (json.jsonrpc !== '2.0' || json.id !== 1 || json.error || !Object.hasOwn(json,'result')) throw new Error('Chain balance unavailable');
     return json.result;
   }
+  if(await call('getGenesisHash',[]) !== genesis)throw new Error('Solana network mismatch');
   const sol = await call('getBalance', [wallet, {commitment: 'finalized'}]);
   // Solana JSON emits lamports as a number; refuse values that cannot be represented exactly.
-  if (!Number.isSafeInteger(sol.value) || sol.value < 0) throw new Error('Chain balance unavailable at this precision');
-  let token = null;
-  if (mint) {
-    const result = await call('getTokenAccountsByOwner', [wallet, {mint}, {encoding: 'jsonParsed', commitment: 'finalized'}]);
-    if (!Array.isArray(result.value)) throw new Error('Chain balance unavailable');
-    let atoms = 0n, decimals = null;
-    for (const row of result.value) {
-      const info = row.account?.data?.parsed?.info, amount = info?.tokenAmount;
-      if (info?.mint !== mint || info?.owner !== wallet || typeof amount?.amount !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(amount.amount) || !Number.isInteger(amount.decimals) || amount.decimals < 0 || amount.decimals > 18 || (decimals !== null && decimals !== amount.decimals)) throw new Error('Chain balance unavailable');
-      atoms += BigInt(amount.amount); decimals = amount.decimals;
-    }
-    token = {mint, atoms: atoms.toString(), decimals};
-  }
-  return {available: true, commitment: 'finalized', solLamports: String(sol.value), token, displayOnly: true};
+  if (!Number.isSafeInteger(sol?.context?.slot) || sol.context.slot < 0 || !Number.isSafeInteger(sol.value) || sol.value < 0) throw new Error('Chain balance unavailable at this precision');
+  return {available: true, cluster, genesisVerified: true, commitment: 'finalized', solLamports: String(sol.value), displayOnly: true};
 }

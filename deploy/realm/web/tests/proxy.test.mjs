@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createServer, request} from 'node:http';
 import {once} from 'node:events';
 import {createWebGateway} from '../proxy.mjs';
+import {createEconomy} from '../../economy/api.mjs';
 
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server,'listening'); return `http://127.0.0.1:${server.address().port}`; }
 async function fixture(t, options={}) {
@@ -75,6 +76,51 @@ test('economy identity is derived from the actual realm session and never reques
   const response=await fetch(`${url}/api/economy/me?id=999`,{headers:{cookie:'realm=valid'}});
   assert.deepEqual(await response.json(),{id:17,username:'tester',isAdmin:false});
   assert.equal(response.headers.get('cache-control'),'private, no-store');
+});
+
+test('SOL-only realm never constructs or calls a legacy token market even with launch flags',async t=>{
+  let constructed=0,calls=0;
+  const {url}=await fixture(t,{
+    env:{TOKEN_LAUNCHED:'true',SWAPS_ENABLED:'true',GAME_TOKEN_MINT:'11111111111111111111111111111111'},
+    marketFactory:()=>{constructed++;return async(_req,res)=>{calls++;res.end('unsafe market');return true;};},
+  });
+  for(const path of ['config','order','execute']) {
+    const post=path!=='config';
+    const response=await fetch(`${url}/api/market/${path}`,{method:post?'POST':'GET',headers:{cookie:'realm=valid',...(post?{origin:'https://realm.example','content-type':'application/json','x-realm-market':'1'}:{})},...(post?{body:'{}'}:{})});
+    assert.equal(response.status,post?503:200);
+    const value=await response.json();
+    assert.equal(value.enabled,false);
+    assert.equal(value.currency,'SOL');
+    assert.equal(value.tokenMint,null);
+    assert.equal(value.settlementEnabled,false);
+  }
+  assert.equal(constructed,0);assert.equal(calls,0);
+  assert.equal((await fetch(`${url}/api/market/config`)).status,401);
+});
+
+test('actual SOL economy keeps authenticated character snapshots and settlement boundaries through the gateway',async t=>{
+  const {url,seen}=await fixture(t,{
+    economyFactory:createEconomy,dbPath:':memory:',
+    env:{PUBLIC_ORIGIN:'https://realm.example',ECONOMY_TOKEN_MINT:'retired-token',TOKEN_LAUNCHED:'true',SWAPS_ENABLED:'true'},
+    realmHandler:(req,res)=>{
+      if(req.url!=='/api/character-balances')return false;
+      assert.equal(req.headers.cookie,'realm=valid');
+      res.setHeader('content-type','application/json');
+      res.end(JSON.stringify({characters:[{guid:'7',name:'Ordinary',moneyUnits:'42',online:false}],snapshot:'last-saved',nonredeemable:true}));return true;
+    },
+  });
+  assert.equal((await fetch(`${url}/api/economy/state`)).status,401);
+  const state=await (await fetch(`${url}/api/economy/state?accountId=999&wallet=attacker`,{headers:{cookie:'realm=valid','x-account':'999'}})).json();
+  assert.equal(state.config.currency.symbol,'SOL');assert.equal(state.config.cluster,'devnet');
+  assert.equal(state.wallet.address,null);assert.equal(state.vault.units,'0');assert.equal(state.vault.nonredeemable,true);
+  assert.deepEqual(state.characterMoney.characters,[{guid:'7',name:'Ordinary',moneyUnits:'42',online:false}]);
+  const wallet=await (await fetch(`${url}/api/economy/wallet/balances`,{headers:{cookie:'realm=valid'}})).json();
+  assert.equal(wallet.available,false);assert.equal(wallet.cluster,'devnet');
+  for(const path of ['deposit','withdraw','swap']){
+    const response=await fetch(`${url}/api/economy/${path}`,{method:'POST',headers:{cookie:'realm=valid',origin:'https://realm.example','content-type':'application/json','x-realm-economy':'1'},body:'{}'});
+    assert.equal(response.status,503);assert.equal((await response.json()).settlementEnabled,false);
+  }
+  assert.equal(seen.filter(row=>row.url.startsWith('/api/character-balances')).length,1);
 });
 test('mutation origin must exactly match the configured origin',async t=>{
   const {url,seen}=await fixture(t);

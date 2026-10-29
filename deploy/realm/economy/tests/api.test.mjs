@@ -120,27 +120,62 @@ test('administrator allocation stays bounded and one time without giving players
   assert.equal((await request('/test-allocation',{method:'POST',account:'2',body:{units:'120'}})).status,400);
 });
 
-test('configured token address may be off curve and never enables settlement', async t => {
-  const [mint] = PublicKey.findProgramAddressSync([Buffer.from('mint')],new PublicKey('11111111111111111111111111111111'));
-  const {request} = await fixture(t,{ECONOMY_TOKEN_MINT:mint.toBase58()});
+test('native SOL replaces the launch token without converting existing TEST balances', async t => {
+  const {request} = await fixture(t,{ECONOMY_TOKEN_MINT:'retired-invalid-mint',GAME_TOKEN_MINT:'retired-token',TOKEN_LAUNCHED:'true',SWAPS_ENABLED:'true',ECONOMY_TEST_ALLOCATION_UNITS:'100'});
   const {body} = await request('/state');
-  assert.equal(body.config.mint,mint.toBase58());
-  assert.equal(body.config.mintValidated,false);
+  assert.deepEqual(body.config.currency,{symbol:'SOL',name:'Solana',assetKind:'native-sol',decimals:9,requiresMint:false});
+  assert.equal(body.config.cluster,'devnet');
+  assert.equal(body.config.mint,null);
   assert.equal(body.config.settlementEnabled,false);
+  assert.equal(body.config.gameUnitConversion,null);
+  assert.equal(body.config.nonredeemable,true);
+  const allocation=await request('/test-allocation',{method:'POST',body:{}});
+  assert.equal(allocation.body.vault.units,'100');
+  assert.equal(allocation.body.vault.nonredeemable,true);
+  assert.equal(allocation.body.vault.linkedToCharacterMoney,false);
 });
 
-test('chain balance display preserves integer atoms and rejects imprecise RPC values', async () => {
-  const wallet = keys().wallet, mint = keys().wallet;
+test('native SOL display pins the chain before exact finalized lamport reads and never queries tokens', async () => {
+  const wallet = keys().wallet, calls=[];
   const fetchImpl = async (_url,options) => {
     const request = JSON.parse(options.body);
-    if(request.method === 'getBalance') return {ok:true,json:async()=>({result:{context:{slot:100},value:1234567890}})};
-    return {ok:true,json:async()=>({result:{context:{slot:100},value:[{account:{data:{parsed:{info:{mint,owner:wallet,tokenAmount:{amount:'9007199254740993',decimals:9}}}}}},{account:{data:{parsed:{info:{mint,owner:wallet,tokenAmount:{amount:'7',decimals:9}}}}}}]}})};
+    calls.push(request);
+    const result=request.method==='getGenesisHash' ? 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' : {context:{slot:100},value:1234567890};
+    return {ok:true,json:async()=>({jsonrpc:'2.0',id:1,result})};
   };
-  const result = await chainBalances({wallet,mint,rpc:'https://rpc.example',fetchImpl});
+  const result = await chainBalances({wallet,cluster:'devnet',rpc:'https://rpc.example',fetchImpl});
   assert.equal(result.solLamports,'1234567890');
-  assert.equal(result.token.atoms,'9007199254741000');
+  assert.equal(result.cluster,'devnet');
+  assert.equal(result.genesisVerified,true);
+  assert.equal(result.token,undefined);
   assert.equal(result.displayOnly,true);
-  await assert.rejects(()=>chainBalances({wallet,mint,rpc:'https://rpc.example',fetchImpl:async()=>({ok:true,json:async()=>({result:{value:9007199254740992}})})}));
+  assert.deepEqual(calls.map(call=>call.method),['getGenesisHash','getBalance']);
+  assert.deepEqual(calls[1].params,[wallet,{commitment:'finalized'}]);
+});
+
+test('SOL reads refuse wrong networks, invalid contexts and rounded balances', async () => {
+  const wallet=keys().wallet;
+  for(const [genesis,balance] of [
+    ['5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2dN',{context:{slot:100},value:123}],
+    ['EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',{context:{slot:100},value:9007199254740992}],
+    ['EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',{context:{slot:-1},value:123}],
+    ['EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',{context:{slot:100},value:-1}],
+  ]) {
+    const calls=[];
+    await assert.rejects(()=>chainBalances({wallet,cluster:'devnet',rpc:'https://rpc.example',fetchImpl:async(_url,options)=>{
+      const request=JSON.parse(options.body);calls.push(request.method);
+      return {ok:true,json:async()=>({jsonrpc:'2.0',id:1,result:request.method==='getGenesisHash'?genesis:balance})};
+    }}));
+    if(genesis.startsWith('5ey'))assert.deepEqual(calls,['getGenesisHash']);
+  }
+});
+
+test('native SOL public config never exposes RPC credentials and rejects unsupported clusters', async t => {
+  const {request}=await fixture(t,{ECONOMY_SOLANA_CLUSTER:'mainnet-beta',ECONOMY_SOLANA_RPC_URL:'https://rpc.example/?api-key=private-rpc-secret'});
+  const response=await request('/state');
+  assert.equal(response.body.config.cluster,'mainnet-beta');
+  assert.doesNotMatch(JSON.stringify(response.body),/private-rpc-secret|rpc.example/);
+  assert.throws(()=>createEconomy({identity:async()=>({id:1}),dbPath:':memory:',env:{PUBLIC_ORIGIN:origin,ECONOMY_SOLANA_CLUSTER:'attacker-cluster'}}));
 });
 
 test('character money uses only trusted account adapter and exact last-saved snapshots', async t => {
