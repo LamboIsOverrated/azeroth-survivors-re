@@ -1,14 +1,28 @@
 # Browser realm acceptance record
 
-Status recorded on 2026-10-28. This is a running **TEST realm**, not a production launch or a guarantee of defect-free operation. TEST characters, items and currency do not carry into the future redeemable economy.
+Status recorded on 2026-10-29. This is a running **TEST realm**, not a production launch or a guarantee of defect-free operation. TEST characters, items and currency do not carry into the future redeemable economy. The user has selected native SOL instead of a custom token.
 
 ## Deployed browser realm
 
 [Open the TEST realm](https://realm-web-pvp-staging.up.railway.app/). The original Survivors preview remains a separate deployment. Accounts are managed through the realm administration page; private operator credentials are kept outside Git.
 
-The deployed web gateway is at `b092b35` (Railway deployment `f9ffd55b-dba3-414b-bb77-12f285bfd14e`) and uses the source-built `mmo-b092b35f14cc-38` runtime from [build 40719676787](https://github.com/LamboIsOverrated/azeroth-survivors-re/actions/runs/40719676787). Its 23,110,316-byte archive SHA256 is `14ac021738c1303ebc914e6f99dcdfe763b2bc1b136a0137d47651f908516975`. All source checks and the full runtime build passed. The installed source marker, native account executable, JavaScript and WASM hashes were checked independently, with `REALM_TRANSPORT_PROFILE=cmangos-classic-4d230bb1`; public readiness is true and mainnet transfers remain false. The private world service behind the public gateway still uses the stock companion core. The compiled movement/bridge core remains in the isolated restore environment and has not replaced that deployed core.
+The deployed Node web gateway is at `91ded5a` (Railway deployment `c684d085-84e1-4305-928e-9dd7a2ac8ea3`). All checks for that source passed. It preserves the source-built `mmo-b092b35f14cc-38` Rust/WASM runtime from [build 40719676787](https://github.com/LamboIsOverrated/azeroth-survivors-re/actions/runs/40719676787), including its `b092b35` source marker. The 23,110,316-byte runtime archive SHA256 is `14ac021738c1303ebc914e6f99dcdfe763b2bc1b136a0137d47651f908516975`. The installed account executable, JavaScript and WASM hashes were checked independently, with `REALM_TRANSPORT_PROFILE=cmangos-classic-4d230bb1`; public readiness is true and mainnet transfers remain false. The private world service behind the public gateway still uses the stock companion core. The compiled movement/bridge core remains in the isolated restore environment and has not replaced that deployed core.
 
-Observed through ordinary player accounts:
+## Native SOL direction and wallet rollout
+
+The SOL-only gateway no longer constructs the legacy token market or serves its bundles. Stale custom-token launch settings cannot reopen it. The installed and publicly served 260,829-byte wallet bundle has SHA256 `7c5965c7ba034bde2ceacf8838bdcf940994bdb6696ffe85eafeb0d4a9d6bd73`; six installed Node source files matched the reviewed gateway commit. Read-only wallet settings are explicitly paired as `ECONOMY_SOLANA_CLUSTER=devnet` and the official devnet RPC endpoint. SOL display checks the full pinned genesis before a finalized balance read; malformed or rounded amounts fail closed. A separate actual read-only devnet genesis request matched the pinned value. No on-chain payment was sent.
+
+The authenticated public wallet visibly showed **Your wallet · Native SOL**, the SOL-only target, explicit devnet/test-SOL labeling, no linked wallet, the saved ordinary character offline with zero TEST money, and a completed refresh. It continued to state that TEST money cannot be exchanged for SOL and deposits/withdrawals are unavailable. No wallet was connected, no message or transaction signed, and no world entry or gameplay action was needed for this Node-only rollout. The retired market bundles returned 410; unauthenticated economy and market configuration requests returned 401 once the account service was ready. Initial 503 responses while world files were still being verified are retained separately.
+
+The existing conserved accounting kernel now has an explicitly isolated **devnet-only** native-SOL policy with immutable network, treasury, game-unit scale and reserve floor. It verifies actual signed System Transfer + Memo fixtures and every native balance delta. Gross withdrawals include the quoted fee: success consumes gross, finalized failure consumes only its proven fee, complete expiry proof returns gross, and ambiguous sends retain the reservation. A later review found that fee-sized requests could reserve funds before rejection. `411db9d` fixes that internal path by validating and committing the exact fee/net/blockhash plan atomically with the initial reservation; tiny requests leave no lock or posting and corrected retries work after restart. Independent review reproduced the old defect and checked the fix, competing quotes, immutable plans and unchanged SPL behavior.
+
+After that fix, the fresh combined Node suite passed **256/256 tests**, with zero failures or skips; independent accounting/settlement verification passed **171/171**. Browser wallet and market builds passed. These are offline receipt/accounting fixtures, not actual devnet payment acceptance. The public web image does not install or wire the conserved accounting kernel. Later internal-kernel/documentation commits are separate from gateway source `91ded5a` and do not require another public web deployment.
+
+A fresh encrypted online web-state recovery copy was authenticated and credential-decryption checked before this rollout. Afterward both SQLite schemas, integrity, user versions and matching key were unchanged; four web users, four game accounts and zero TEST journal entries remained. The stock native process identities and binary hashes were unchanged. There was no fresh pre-rollout actor SQL baseline for this date, so a tiny historical position difference consistent with stock save rounding is not attributed to the rollout or described as bit-exact position invariance. This is web-state recovery and read-only UI acceptance, not a coherent full-world backup or production certification.
+
+## Earlier ordinary gameplay acceptance
+
+Observed through ordinary player accounts before this SOL-only wallet rollout:
 
 - Two independently signed-in browsers created Human and Orc warriors and entered the shared world. Accounts had game security level zero.
 - Both Alliance-to-Horde and Horde-to-Alliance attacks reduced the other player's health in an open-world PvP location. These were attended UI actions; no combat script or GM combat boost was used.
@@ -66,7 +80,7 @@ See [operations](REALM-OPERATIONS.md) for the maintenance, capture and restore p
 
 ## Financial and launch gates still open
 
-The wallet links an account through a single-use signed challenge. The internal TEST outbox and closed LIVE accounting kernel remain separate from public settlement routes. All deployed mainnet deposit, withdrawal and game redemption routes remain closed. The CA alone cannot open them.
+The wallet links an account through a single-use signed challenge. The internal TEST outbox and closed conserved accounting kernel remain separate from public settlement routes. All deployed mainnet deposit, withdrawal and game redemption routes remain closed. Native SOL needs no custom-token CA or token exchange; trustworthy funded gameplay and custody remain unfinished.
 
 Before a redeemable launch, complete and independently review:
 
@@ -76,6 +90,6 @@ Before a redeemable launch, complete and independently review:
 - Legal forced movement, speed acknowledgements, knockback and real transport lifecycle acceptance before enabling the new movement policy on the deployed core. Private ground/jump/budget/swim/wall tests are narrower evidence.
 - A controlled core rollout with the mandatory InnoDB bridge migrations and exact schema/configuration checks, plus rollback and ordinary gameplay acceptance on that deployed binary.
 - Scheduled coherent database capture, verified offsite retention, a native-volume restore drill, a useful alert destination, and capacity/soak testing. The current 40-player limit is a configured cap, not a demonstrated load result.
-- Final mint/network/decimals validation, immutable token-atom conversion, approved custody/signing, funded treasury and gameplay reward reserves, withdrawal rules and observed solvency. Token-to-SOL exchange also needs an available liquidity route.
+- Reviewed mainnet native-SOL policy and chain acceptance, an immutable lamport/game-unit conversion, approved custody/signing, a funded treasury and gameplay reward reserves, withdrawal rules and observed solvency. The current native accounting policy explicitly refuses mainnet. No custom-token mint or token/SOL liquidity route is required for the selected SOL-only direction.
 
-These gates describe remaining implementation and operating work as well as launch configuration. They are not satisfied by a passing unit suite, supplying a token address, or renaming TEST gold.
+These gates describe remaining implementation and operating work as well as launch configuration. They are not satisfied by a passing unit suite, supplying a treasury address, or renaming TEST gold.

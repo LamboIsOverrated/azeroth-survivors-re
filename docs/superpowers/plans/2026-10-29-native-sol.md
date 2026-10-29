@@ -29,29 +29,29 @@
 
 **Files:** create deploy/realm/economy/settlement/native-sol.mjs and tests/native-sol.test.mjs.
 
-- [ ] Write and run failing tests for exact native transfer construction, signature/message/lamport-delta proof, successful and failed fees, wrong destinations/amounts/memos, extra instructions, unsafe numbers and account ownership.
-- [ ] Implement focused exported native transfer/account/receipt functions using existing signature primitives, without network mutation or wallet keys.
-- [ ] Run protocol and existing settlement tests; independent reviewer checks the proof boundary.
+- [x] Write and run failing tests for exact native transfer construction, signature/message/lamport-delta proof, successful and failed fees, wrong destinations/amounts/memos, extra instructions, unsafe numbers and account ownership.
+- [x] Implement focused exported native transfer/account/receipt functions using existing signature primitives, without network mutation or wallet keys.
+- [x] Run protocol and existing settlement tests; independent reviewer checks the proof boundary.
 
 ### Task 2: Conserved devnet SOL accounting
 
 **Files:** modify bridge/accounting/{amounts,deposit,withdrawals}.mjs; add tests/native-sol-accounting.test.mjs and fixtures as needed.
 
-- [ ] Write and run failing tests for explicit devnet SOL config, immutable namespace, native finalized deposits, gross/fee/net withdrawal conservation, failed-fee accounting, retry/restart, fee-too-large rejection and treasury reserve floor.
-- [ ] Extend configuration and existing adapters using Task 1's exact proof functions. Keep old SPL normalized configuration unchanged.
-- [ ] Persist the fee policy in immutable prepared/signed withdrawal proofs; preserve ownership, stale-proof floors, reservation locks, receipt replay and archival absence guards.
-- [ ] Run all accounting tests and independent review. Native changes remain unreachable from public HTTP.
+- [x] Write and run failing tests for explicit devnet SOL config, immutable namespace, native finalized deposits, gross/fee/net withdrawal conservation, failed-fee accounting, retry/restart, fee-too-large rejection and treasury reserve floor.
+- [x] Extend configuration and existing adapters using Task 1's exact proof functions. Keep old SPL normalized configuration unchanged.
+- [x] Persist the fee policy in immutable prepared/signed withdrawal proofs; preserve ownership, stale-proof floors, reservation locks, receipt replay and archival absence guards.
+- [x] Run all accounting tests and independent review. Native changes remain unreachable from public HTTP.
 
 ### Task 3: SOL-only realm wallet and routes
 
 **Files:** modify economy/{api,wallet,wallet-ui}.mjs, web/proxy.mjs as needed, tests and module documentation.
 
-- [ ] Write failing API/gateway tests for SOL config, genesis-checked native reads, stale mint/launch flags and TEST isolation.
-- [ ] Publish SOL denomination/network fields, remove launch-token messaging and swap mounts, and refuse legacy realm market paths without outbound calls.
-- [ ] Run economy/gateway tests and browser asset build. Verify actual UI without connecting or signing a wallet.
-- [ ] Review and commit exact-owned files, push the existing feature branch, and update the existing draft PR. Deploy only after local/integration checks pass; keep the pinned WASM/runtime and core unchanged.
+- [x] Write failing API/gateway tests for SOL config, genesis-checked native reads, stale mint/launch flags and TEST isolation.
+- [x] Publish SOL denomination/network fields, remove launch-token messaging and swap mounts, and refuse legacy realm market paths without outbound calls.
+- [x] Run economy/gateway tests and browser asset build. Verify actual UI without connecting or signing a wallet.
+- [x] Review and commit exact-owned files, push the existing feature branch, and update the existing draft PR. Deploy only after local/integration checks pass; keep the pinned WASM/runtime and core unchanged.
 
 ### Task 4: Release evidence
 
-- [ ] Record what passed and the distinction between synthetic devnet fixtures, real chain acceptance and funded gameplay.
-- [ ] If deployed, verify current readiness, authenticated SOL-only wallet view, character snapshot, and closed real settlement routes. Report any unresolved blocker precisely.
+- [x] Record what passed and the distinction between synthetic devnet fixtures, real chain acceptance and funded gameplay.
+- [x] If deployed, verify current readiness, authenticated SOL-only wallet view, character snapshot, and closed real settlement routes. Report any unresolved blocker precisely.
